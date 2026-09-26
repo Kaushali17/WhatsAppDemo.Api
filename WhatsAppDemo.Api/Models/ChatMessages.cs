@@ -19,5 +19,8 @@
         public string? WhatsAppMessageId { get; set; }
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+        // Navigation property
+        public Conversation? Conversation { get; set; }
     }
 }

@@ -11,5 +11,10 @@
         public Guid? AssignedUserId { get; set; }
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+        // Navigation properties
+        public SalesUser? AssignedUser { get; set; }
+
+        public ICollection<Conversation> Conversations { get; set; } = new List<Conversation>();
     }
 }
