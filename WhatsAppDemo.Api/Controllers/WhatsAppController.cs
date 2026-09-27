@@ -30,7 +30,7 @@ namespace WhatsAppDemo.Api.Controllers
 
         /// <summary>
         /// Meta webhook verification (GET challenge). Meta calls this once when you
-        /// subscribe the webhook URL in the Meta App dashboard.
+        /// subscribe the webhook URL in the Meta App dashboard. 179702
         /// </summary>
         [HttpGet("webhook")]
         public IActionResult VerifyWebhook(
@@ -212,6 +212,17 @@ namespace WhatsAppDemo.Api.Controllers
                         continue;
                     }
 
+                    // Meta nests the business number identity under value.metadata.
+                    // This tells the CRM which registered WhatsApp Business number
+                    // (and therefore which sales person) the message belongs to.
+                    string? metaPhoneNumberId = null;
+                    if (value.TryGetProperty("metadata", out var metadata) &&
+                        metadata.ValueKind == JsonValueKind.Object &&
+                        metadata.TryGetProperty("phone_number_id", out var phoneNumberIdEl))
+                    {
+                        metaPhoneNumberId = phoneNumberIdEl.GetString();
+                    }
+
                     // Map wa_id -> contact name for nicer customer naming.
                     var contactNames = new Dictionary<string, string>();
                     if (value.TryGetProperty("contacts", out var contacts) &&
@@ -317,6 +328,7 @@ namespace WhatsAppDemo.Api.Controllers
                         results.Add(new ReceiveWhatsAppMessageRequest
                         {
                             PhoneNumber = from!,
+                            MetaPhoneNumberId = metaPhoneNumberId,
                             Message = text,
                             MessageType = messageType,
                             MediaUrl = mediaUrl,

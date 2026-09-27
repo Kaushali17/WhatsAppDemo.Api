@@ -18,6 +18,8 @@ namespace WhatsAppDemo.Api.Data
 
         public DbSet<ChatMessages> ChatMessages => Set<ChatMessages>();
 
+        public DbSet<WhatsAppBusinessNumber> WhatsAppBusinessNumbers => Set<WhatsAppBusinessNumber>();
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
@@ -48,6 +50,26 @@ namespace WhatsAppDemo.Api.Data
                 .HasOne(m => m.Conversation)
                 .WithMany(c => c.Messages)
                 .HasForeignKey(m => m.ConversationId)
+                .OnDelete(DeleteBehavior.NoAction);
+
+            // SalesUser -> WhatsAppBusinessNumbers
+            modelBuilder.Entity<WhatsAppBusinessNumber>()
+                .HasOne(n => n.SalesUser)
+                .WithMany(u => u.WhatsAppBusinessNumbers)
+                .HasForeignKey(n => n.SalesUserId)
+                .OnDelete(DeleteBehavior.NoAction);
+
+            // A registered PhoneNumberId must be unique so incoming webhooks map to
+            // exactly one business number/sales person.
+            modelBuilder.Entity<WhatsAppBusinessNumber>()
+                .HasIndex(n => n.PhoneNumberId)
+                .IsUnique();
+
+            // WhatsAppBusinessNumber -> Conversations
+            modelBuilder.Entity<Conversation>()
+                .HasOne(c => c.WhatsAppBusinessNumber)
+                .WithMany(n => n.Conversations)
+                .HasForeignKey(c => c.WhatsAppBusinessNumberId)
                 .OnDelete(DeleteBehavior.NoAction);
         }
     }

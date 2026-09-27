@@ -23,6 +23,7 @@ namespace WhatsAppDemo.Api.Controllers
             var conversations = await _db.Conversations
                 .Include(c => c.Customer)
                 .Include(c => c.AssignedUser)
+                .Include(c => c.WhatsAppBusinessNumber)
                 .OrderByDescending(c => c.LastMessageAt)
                 .ToListAsync();
 
@@ -57,6 +58,7 @@ namespace WhatsAppDemo.Api.Controllers
             var conversation = await _db.Conversations
                 .Include(c => c.Customer)
                 .Include(c => c.AssignedUser)
+                .Include(c => c.WhatsAppBusinessNumber)
                 .FirstOrDefaultAsync(c => c.Id == id);
 
             if (conversation is null)
@@ -78,6 +80,7 @@ namespace WhatsAppDemo.Api.Controllers
             var conversations = await _db.Conversations
                 .Include(c => c.Customer)
                 .Include(c => c.AssignedUser)
+                .Include(c => c.WhatsAppBusinessNumber)
                 .Where(c => c.CustomerId == customerId)
                 .OrderByDescending(c => c.LastMessageAt)
                 .ToListAsync();
@@ -123,6 +126,7 @@ namespace WhatsAppDemo.Api.Controllers
             var conversation = await _db.Conversations
                 .Include(c => c.Customer)
                 .Include(c => c.AssignedUser)
+                .Include(c => c.WhatsAppBusinessNumber)
                 .FirstOrDefaultAsync(c => c.Id == id);
 
             if (conversation is null)
@@ -160,6 +164,8 @@ namespace WhatsAppDemo.Api.Controllers
             CustomerWhatsAppNumber = c.Customer?.WhatsAppNumber,
             AssignedUserId = c.AssignedUserId,
             AssignedUserName = c.AssignedUser?.Name,
+            WhatsAppBusinessNumberId = c.WhatsAppBusinessNumberId,
+            WhatsAppDisplayPhoneNumber = c.WhatsAppBusinessNumber?.DisplayPhoneNumber,
             Status = c.Status,
             CreatedAt = c.CreatedAt,
             LastMessageAt = c.LastMessageAt

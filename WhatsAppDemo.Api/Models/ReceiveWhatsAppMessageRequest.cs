@@ -10,6 +10,13 @@ namespace WhatsAppDemo.Api.Models
         [Required]
         public string PhoneNumber { get; set; } = string.Empty;
 
+        /// <summary>
+        /// Meta phone_number_id extracted from the webhook metadata. Identifies which
+        /// registered WhatsApp Business number (and therefore sales person) the
+        /// incoming message belongs to.
+        /// </summary>
+        public string? MetaPhoneNumberId { get; set; }
+
         public string? Message { get; set; }
 
         // Text / Image / Document

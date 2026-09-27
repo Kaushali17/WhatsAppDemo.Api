@@ -21,6 +21,7 @@ namespace WhatsAppDemo.Api.Controllers
         public async Task<ActionResult<IEnumerable<SalesUserDto>>> GetAll()
         {
             var users = await _db.SalesUsers
+                .Include(u => u.WhatsAppBusinessNumbers)
                 .OrderBy(u => u.Name)
                 .ToListAsync();
 
@@ -52,7 +53,16 @@ namespace WhatsAppDemo.Api.Controllers
         {
             Id = u.Id,
             Name = u.Name,
-            Email = u.Email
+            Email = u.Email,
+            WhatsAppBusinessNumbers = u.WhatsAppBusinessNumbers
+                .Select(n => new SalesUserWhatsAppNumberDto
+                {
+                    Id = n.Id,
+                    DisplayPhoneNumber = n.DisplayPhoneNumber,
+                    PhoneNumberId = n.PhoneNumberId,
+                    IsActive = n.IsActive
+                })
+                .ToList()
         };
     }
 }

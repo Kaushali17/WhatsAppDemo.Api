@@ -53,6 +53,8 @@ namespace WhatsAppDemo.Api.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("ConversationId");
+
                     b.ToTable("ChatMessages");
                 });
 
@@ -78,7 +80,16 @@ namespace WhatsAppDemo.Api.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<Guid?>("WhatsAppBusinessNumberId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.HasKey("Id");
+
+                    b.HasIndex("AssignedUserId");
+
+                    b.HasIndex("CustomerId");
+
+                    b.HasIndex("WhatsAppBusinessNumberId");
 
                     b.ToTable("Conversations");
                 });
@@ -105,6 +116,8 @@ namespace WhatsAppDemo.Api.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("AssignedUserId");
+
                     b.ToTable("Customers");
                 });
 
@@ -125,6 +138,126 @@ namespace WhatsAppDemo.Api.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("SalesUsers");
+                });
+
+            modelBuilder.Entity("WhatsAppDemo.Api.Models.WhatsAppBusinessNumber", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DisplayPhoneNumber")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("PhoneNumberId")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<Guid>("SalesUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("WabaId")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PhoneNumberId")
+                        .IsUnique();
+
+                    b.HasIndex("SalesUserId");
+
+                    b.ToTable("WhatsAppBusinessNumbers");
+                });
+
+            modelBuilder.Entity("WhatsAppDemo.Api.Models.ChatMessages", b =>
+                {
+                    b.HasOne("WhatsAppDemo.Api.Models.Conversation", "Conversation")
+                        .WithMany("Messages")
+                        .HasForeignKey("ConversationId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.Navigation("Conversation");
+                });
+
+            modelBuilder.Entity("WhatsAppDemo.Api.Models.Conversation", b =>
+                {
+                    b.HasOne("WhatsAppDemo.Api.Models.SalesUser", "AssignedUser")
+                        .WithMany("Conversations")
+                        .HasForeignKey("AssignedUserId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("WhatsAppDemo.Api.Models.Customer", "Customer")
+                        .WithMany("Conversations")
+                        .HasForeignKey("CustomerId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("WhatsAppDemo.Api.Models.WhatsAppBusinessNumber", "WhatsAppBusinessNumber")
+                        .WithMany("Conversations")
+                        .HasForeignKey("WhatsAppBusinessNumberId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.Navigation("AssignedUser");
+
+                    b.Navigation("Customer");
+
+                    b.Navigation("WhatsAppBusinessNumber");
+                });
+
+            modelBuilder.Entity("WhatsAppDemo.Api.Models.Customer", b =>
+                {
+                    b.HasOne("WhatsAppDemo.Api.Models.SalesUser", "AssignedUser")
+                        .WithMany("Customers")
+                        .HasForeignKey("AssignedUserId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.Navigation("AssignedUser");
+                });
+
+            modelBuilder.Entity("WhatsAppDemo.Api.Models.WhatsAppBusinessNumber", b =>
+                {
+                    b.HasOne("WhatsAppDemo.Api.Models.SalesUser", "SalesUser")
+                        .WithMany("WhatsAppBusinessNumbers")
+                        .HasForeignKey("SalesUserId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.Navigation("SalesUser");
+                });
+
+            modelBuilder.Entity("WhatsAppDemo.Api.Models.Conversation", b =>
+                {
+                    b.Navigation("Messages");
+                });
+
+            modelBuilder.Entity("WhatsAppDemo.Api.Models.Customer", b =>
+                {
+                    b.Navigation("Conversations");
+                });
+
+            modelBuilder.Entity("WhatsAppDemo.Api.Models.SalesUser", b =>
+                {
+                    b.Navigation("Conversations");
+
+                    b.Navigation("Customers");
+
+                    b.Navigation("WhatsAppBusinessNumbers");
+                });
+
+            modelBuilder.Entity("WhatsAppDemo.Api.Models.WhatsAppBusinessNumber", b =>
+                {
+                    b.Navigation("Conversations");
                 });
 #pragma warning restore 612, 618
         }

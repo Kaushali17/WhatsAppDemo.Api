@@ -12,5 +12,7 @@
         public ICollection<Customer> Customers { get; set; } = new List<Customer>();
 
         public ICollection<Conversation> Conversations { get; set; } = new List<Conversation>();
+
+        public ICollection<WhatsAppBusinessNumber> WhatsAppBusinessNumbers { get; set; } = new List<WhatsAppBusinessNumber>();
     }
 }

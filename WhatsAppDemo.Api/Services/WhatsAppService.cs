@@ -39,12 +39,14 @@ namespace WhatsAppDemo.Api.Services
 
         public async Task<WhatsAppMessageResult> SendMessageAsync(SendWhatsAppMessageRequest request)
         {
-            if (string.IsNullOrWhiteSpace(request.PhoneNumber))
+            // Option 3: prefer ConversationId (unambiguous multi-number routing) but
+            // still accept the legacy PhoneNumber path for backward compatibility.
+            if (request.ConversationId is null && string.IsNullOrWhiteSpace(request.PhoneNumber))
             {
                 return new WhatsAppMessageResult
                 {
                     Success = false,
-                    Message = "PhoneNumber is required."
+                    Message = "Either ConversationId or PhoneNumber is required."
                 };
             }
 
@@ -68,22 +70,66 @@ namespace WhatsAppDemo.Api.Services
                 };
             }
 
-            var phone = NormalizePhone(request.PhoneNumber);
+            Customer? customer;
+            Conversation conversation;
 
-            var customer = await _db.Customers
-                .FirstOrDefaultAsync(c => c.WhatsAppNumber == phone);
-
-            if (customer is null)
+            if (request.ConversationId is Guid conversationId)
             {
-                return new WhatsAppMessageResult
+                // Preferred path: the conversation already knows its business number.
+                conversation = await _db.Conversations
+                    .FirstOrDefaultAsync(c => c.Id == conversationId);
+
+                if (conversation is null)
                 {
-                    Success = false,
-                    CustomerNotFound = true,
-                    Message = $"No customer found for WhatsApp number '{phone}'."
-                };
+                    return new WhatsAppMessageResult
+                    {
+                        Success = false,
+                        Message = $"Conversation '{conversationId}' was not found."
+                    };
+                }
+
+                customer = await _db.Customers
+                    .FirstOrDefaultAsync(c => c.Id == conversation.CustomerId);
+
+                if (customer is null)
+                {
+                    return new WhatsAppMessageResult
+                    {
+                        Success = false,
+                        CustomerNotFound = true,
+                        Message = "The conversation's customer could not be found."
+                    };
+                }
+            }
+            else
+            {
+                // Legacy path: resolve by the customer's WhatsApp number.
+                var phoneLookup = NormalizePhone(request.PhoneNumber!);
+
+                customer = await _db.Customers
+                    .FirstOrDefaultAsync(c => c.WhatsAppNumber == phoneLookup);
+
+                if (customer is null)
+                {
+                    return new WhatsAppMessageResult
+                    {
+                        Success = false,
+                        CustomerNotFound = true,
+                        Message = $"No customer found for WhatsApp number '{phoneLookup}'."
+                    };
+                }
+
+                conversation = await GetOrCreateOpenConversationAsync(customer);
             }
 
-            var conversation = await GetOrCreateOpenConversationAsync(customer);
+            // The recipient number always comes from the customer, never the request,
+            // so a ConversationId send is delivered to the correct person.
+            var phone = NormalizePhone(customer.WhatsAppNumber);
+
+            // Determine which WhatsApp Business number this conversation uses so the
+            // Cloud API call goes out through the correct Meta PhoneNumberId. Falls
+            // back to the global configured number for backward compatibility.
+            var senderPhoneNumberId = await ResolveOutgoingPhoneNumberIdAsync(conversation);
 
             // Deliver the message for real through the Meta Cloud API so the
             // recipient actually receives it. The mock provider only simulates
@@ -102,7 +148,8 @@ namespace WhatsAppDemo.Api.Services
                         text = new { body = request.Message }
                     },
                     "text",
-                    phone);
+                    phone,
+                    senderPhoneNumberId);
 
                 if (!metaResult.Success)
                 {
@@ -121,7 +168,7 @@ namespace WhatsAppDemo.Api.Services
                 // then send a message that references it. Falls back to the mock
                 // provider when the upload can't be performed.
                 var metaResult = await SendMediaToMetaAsync(
-                    phone, messageType, request.MediaUrl, request.Message);
+                    phone, messageType, request.MediaUrl, request.Message, senderPhoneNumberId);
 
                 if (!metaResult.Success)
                 {
@@ -206,6 +253,31 @@ namespace WhatsAppDemo.Api.Services
 
             var phone = NormalizePhone(request.PhoneNumber);
 
+            // Resolve which registered WhatsApp Business number (and therefore which
+            // sales person) this incoming message belongs to. Never guess: if Meta
+            // sent a phone_number_id we don't recognise, refuse to assign it to a
+            // random sales person.
+            WhatsAppBusinessNumber? businessNumber = null;
+            if (!string.IsNullOrWhiteSpace(request.MetaPhoneNumberId))
+            {
+                businessNumber = await _db.WhatsAppBusinessNumbers
+                    .FirstOrDefaultAsync(n => n.PhoneNumberId == request.MetaPhoneNumberId && n.IsActive);
+
+                if (businessNumber is null)
+                {
+                    _logger.LogWarning(
+                        "Incoming WhatsApp message for unregistered phone_number_id {PhoneNumberId}. " +
+                        "Message will not be assigned to any sales person.",
+                        request.MetaPhoneNumberId);
+
+                    return new WhatsAppMessageResult
+                    {
+                        Success = false,
+                        Message = $"No registered WhatsApp Business number found for phone_number_id '{request.MetaPhoneNumberId}'."
+                    };
+                }
+            }
+
             // Meta retries the webhook when it doesn't get a fast 200 OK (media
             // downloads make our handler slower, which triggers retries). Each retry
             // carries the same WhatsApp message id, so ignore messages we've already
@@ -250,14 +322,22 @@ namespace WhatsAppDemo.Api.Services
                         ? $"WhatsApp {phone}"
                         : request.CustomerName!,
                     WhatsAppNumber = phone,
+                    // Assign the customer to the sales person who owns the business
+                    // number that received this message.
+                    AssignedUserId = businessNumber?.SalesUserId,
                     CreatedAt = DateTime.UtcNow
                 };
 
                 _db.Customers.Add(customer);
                 _logger.LogInformation("Created new customer for incoming WhatsApp number {Phone}.", phone);
             }
+            else if (businessNumber is not null && customer.AssignedUserId is null)
+            {
+                // Existing customer with no owner yet: adopt the receiving number's owner.
+                customer.AssignedUserId = businessNumber.SalesUserId;
+            }
 
-            var conversation = await GetOrCreateOpenConversationAsync(customer);
+            var conversation = await GetOrCreateOpenConversationAsync(customer, businessNumber);
 
             // Incoming media arrives as a Meta media id. Download the bytes and store
             // them locally so the file can be opened/downloaded from the CRM.
@@ -309,7 +389,9 @@ namespace WhatsAppDemo.Api.Services
             };
         }
 
-        private async Task<Conversation> GetOrCreateOpenConversationAsync(Customer customer)
+        private async Task<Conversation> GetOrCreateOpenConversationAsync(
+            Customer customer,
+            WhatsAppBusinessNumber? businessNumber = null)
         {
             var conversation = await _db.Conversations
                 .Where(c => c.CustomerId == customer.Id && c.Status == "Open")
@@ -322,8 +404,10 @@ namespace WhatsAppDemo.Api.Services
                 {
                     Id = Guid.NewGuid(),
                     CustomerId = customer.Id,
-                    // Preserve the customer's assigned sales user.
-                    AssignedUserId = customer.AssignedUserId,
+                    // Preserve the customer's assigned sales user, falling back to the
+                    // business number's owner when the customer has none.
+                    AssignedUserId = customer.AssignedUserId ?? businessNumber?.SalesUserId,
+                    WhatsAppBusinessNumberId = businessNumber?.Id,
                     Status = "Open",
                     CreatedAt = DateTime.UtcNow,
                     LastMessageAt = DateTime.UtcNow
@@ -331,12 +415,38 @@ namespace WhatsAppDemo.Api.Services
 
                 _db.Conversations.Add(conversation);
             }
+            else if (businessNumber is not null && conversation.WhatsAppBusinessNumberId is null)
+            {
+                // Backfill the business number on a pre-existing conversation.
+                conversation.WhatsAppBusinessNumberId = businessNumber.Id;
+            }
 
             return conversation;
         }
 
         private static string NormalizePhone(string phoneNumber)
             => phoneNumber.Trim();
+
+        /// <summary>
+        /// Determines the Meta PhoneNumberId to send from, based on the conversation's
+        /// associated WhatsApp Business number. Falls back to the globally configured
+        /// PhoneNumberId to keep the single-number POC working.
+        /// </summary>
+        private async Task<string> ResolveOutgoingPhoneNumberIdAsync(Conversation conversation)
+        {
+            if (conversation.WhatsAppBusinessNumberId is Guid businessNumberId)
+            {
+                var businessNumber = await _db.WhatsAppBusinessNumbers
+                    .FirstOrDefaultAsync(n => n.Id == businessNumberId);
+
+                if (businessNumber is not null && !string.IsNullOrWhiteSpace(businessNumber.PhoneNumberId))
+                {
+                    return businessNumber.PhoneNumberId;
+                }
+            }
+
+            return _settings.PhoneNumberId;
+        }
 
         private static string NormalizeMessageType(string? messageType)
         {
@@ -361,6 +471,8 @@ namespace WhatsAppDemo.Api.Services
                 CustomerName = customer.Name,
                 CustomerWhatsAppNumber = customer.WhatsAppNumber,
                 AssignedUserId = conversation.AssignedUserId,
+                WhatsAppBusinessNumberId = conversation.WhatsAppBusinessNumberId,
+                WhatsAppDisplayPhoneNumber = conversation.WhatsAppBusinessNumber?.DisplayPhoneNumber,
                 Status = conversation.Status,
                 CreatedAt = conversation.CreatedAt,
                 LastMessageAt = conversation.LastMessageAt
@@ -516,9 +628,14 @@ namespace WhatsAppDemo.Api.Services
         private async Task<WhatsAppSendMessageResponse> SendToMetaAsync(
             object requestBody,
             string messageKind,
-            string recipientPhoneNumber)
+            string recipientPhoneNumber,
+            string? senderPhoneNumberId = null)
         {
-            if (string.IsNullOrWhiteSpace(_settings.PhoneNumberId) ||
+            var phoneNumberId = string.IsNullOrWhiteSpace(senderPhoneNumberId)
+                ? _settings.PhoneNumberId
+                : senderPhoneNumberId;
+
+            if (string.IsNullOrWhiteSpace(phoneNumberId) ||
                 string.IsNullOrWhiteSpace(_settings.AccessToken))
             {
                 _logger.LogError(
@@ -532,7 +649,7 @@ namespace WhatsAppDemo.Api.Services
             }
 
             var url =
-                $"{_settings.BaseUrl}/{_settings.ApiVersion}/{_settings.PhoneNumberId}/messages";
+                $"{_settings.BaseUrl}/{_settings.ApiVersion}/{phoneNumberId}/messages";
 
             var json = JsonSerializer.Serialize(requestBody);
 
@@ -596,7 +713,8 @@ namespace WhatsAppDemo.Api.Services
             string recipientPhoneNumber,
             string messageType,
             string? mediaUrl,
-            string? caption)
+            string? caption,
+            string? senderPhoneNumberId = null)
         {
             if (string.IsNullOrWhiteSpace(mediaUrl))
             {
@@ -607,7 +725,11 @@ namespace WhatsAppDemo.Api.Services
                 };
             }
 
-            if (string.IsNullOrWhiteSpace(_settings.PhoneNumberId) ||
+            var phoneNumberId = string.IsNullOrWhiteSpace(senderPhoneNumberId)
+                ? _settings.PhoneNumberId
+                : senderPhoneNumberId;
+
+            if (string.IsNullOrWhiteSpace(phoneNumberId) ||
                 string.IsNullOrWhiteSpace(_settings.AccessToken))
             {
                 return new WhatsAppSendMessageResponse
@@ -633,7 +755,7 @@ namespace WhatsAppDemo.Api.Services
             string? mediaId;
             await using (media.Content)
             {
-                mediaId = await UploadMediaToMetaAsync(media);
+                mediaId = await UploadMediaToMetaAsync(media, phoneNumberId);
             }
 
             if (string.IsNullOrWhiteSpace(mediaId))
@@ -665,15 +787,19 @@ namespace WhatsAppDemo.Api.Services
                 [metaType] = mediaPayload
             };
 
-            return await SendToMetaAsync(requestBody, metaType, recipientPhoneNumber);
+            return await SendToMetaAsync(requestBody, metaType, recipientPhoneNumber, phoneNumberId);
         }
 
         /// <summary>
         /// Uploads a file to the Meta /media endpoint and returns the media id.
         /// </summary>
-        private async Task<string?> UploadMediaToMetaAsync(StoredMediaFile media)
+        private async Task<string?> UploadMediaToMetaAsync(StoredMediaFile media, string? senderPhoneNumberId = null)
         {
-            var url = $"{_settings.BaseUrl}/{_settings.ApiVersion}/{_settings.PhoneNumberId}/media";
+            var phoneNumberId = string.IsNullOrWhiteSpace(senderPhoneNumberId)
+                ? _settings.PhoneNumberId
+                : senderPhoneNumberId;
+
+            var url = $"{_settings.BaseUrl}/{_settings.ApiVersion}/{phoneNumberId}/media";
 
             using var content = new MultipartFormDataContent();
             var fileContent = new StreamContent(media.Content);

@@ -48,7 +48,7 @@ namespace WhatsAppDemo.Api
             using (var scope = app.Services.CreateScope())
             {
                 var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                await DbSeeder.SeedAsync(db);
+                await DbSeeder.SeedAsync(db, builder.Configuration);
             }
 
             // Configure the HTTP request pipeline.

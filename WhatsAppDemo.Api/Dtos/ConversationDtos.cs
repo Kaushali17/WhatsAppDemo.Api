@@ -14,6 +14,10 @@ namespace WhatsAppDemo.Api.Dtos
 
         public string? AssignedUserName { get; set; }
 
+        public Guid? WhatsAppBusinessNumberId { get; set; }
+
+        public string? WhatsAppDisplayPhoneNumber { get; set; }
+
         public string Status { get; set; } = "Open";
 
         public DateTime CreatedAt { get; set; }

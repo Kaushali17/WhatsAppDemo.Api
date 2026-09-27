@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using WhatsAppDemo.Api.Models;
 
 namespace WhatsAppDemo.Api.Data
@@ -9,7 +10,13 @@ namespace WhatsAppDemo.Api.Data
     /// </summary>
     public static class DbSeeder
     {
-        public static async Task SeedAsync(AppDbContext db)
+        public static async Task SeedAsync(AppDbContext db, IConfiguration? configuration = null)
+        {
+            await SeedSalesUsersAndCustomersAsync(db);
+            await SeedExistingTestNumberAsync(db, configuration);
+        }
+
+        private static async Task SeedSalesUsersAndCustomersAsync(AppDbContext db)
         {
             if (await db.SalesUsers.AnyAsync())
             {
@@ -37,6 +44,48 @@ namespace WhatsAppDemo.Api.Data
             };
 
             await db.Customers.AddRangeAsync(customers);
+            await db.SaveChangesAsync();
+        }
+
+        /// <summary>
+        /// Migrates the existing single-number POC configuration into the new
+        /// WhatsAppBusinessNumber table and assigns it to a test sales person, so the
+        /// current test number keeps working after the multi-number changes.
+        /// </summary>
+        private static async Task SeedExistingTestNumberAsync(AppDbContext db, IConfiguration? configuration)
+        {
+            if (configuration is null)
+            {
+                return;
+            }
+
+            var phoneNumberId = configuration["WhatsApp:PhoneNumberId"];
+            if (string.IsNullOrWhiteSpace(phoneNumberId))
+            {
+                return;
+            }
+
+            if (await db.WhatsAppBusinessNumbers.AnyAsync(n => n.PhoneNumberId == phoneNumberId))
+            {
+                return;
+            }
+
+            var testUser = await db.SalesUsers.OrderBy(u => u.Name).FirstOrDefaultAsync();
+            if (testUser is null)
+            {
+                return;
+            }
+
+            db.WhatsAppBusinessNumbers.Add(new WhatsAppBusinessNumber
+            {
+                Id = Guid.NewGuid(),
+                SalesUserId = testUser.Id,
+                PhoneNumberId = phoneNumberId,
+                DisplayPhoneNumber = "POC Test Number",
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow
+            });
+
             await db.SaveChangesAsync();
         }
     }

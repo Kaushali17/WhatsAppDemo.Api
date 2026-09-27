@@ -9,6 +9,23 @@ namespace WhatsAppDemo.Api.Dtos
         public string Name { get; set; } = string.Empty;
 
         public string Email { get; set; } = string.Empty;
+
+        /// <summary>
+        /// The sales person's WhatsApp business numbers (safe fields only; never
+        /// includes any access token).
+        /// </summary>
+        public List<SalesUserWhatsAppNumberDto> WhatsAppBusinessNumbers { get; set; } = new();
+    }
+
+    public class SalesUserWhatsAppNumberDto
+    {
+        public Guid Id { get; set; }
+
+        public string DisplayPhoneNumber { get; set; } = string.Empty;
+
+        public string PhoneNumberId { get; set; } = string.Empty;
+
+        public bool IsActive { get; set; }
     }
 
     public class CreateSalesUserRequest
