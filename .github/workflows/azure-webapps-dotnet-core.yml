@@ -5,7 +5,7 @@ env:
   DOTNET_VERSION: '8.0.x'
   PROJECT_PATH: 'WhatsAppDemo.Api/WhatsAppDemo.Api.csproj'
   PUBLISH_PATH: './publish'
-
+ 
 on:
   push:
     branches:
