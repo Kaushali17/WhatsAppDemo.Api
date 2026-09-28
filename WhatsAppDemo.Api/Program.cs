@@ -39,11 +39,8 @@ namespace WhatsAppDemo.Api
                 options.AddPolicy("Frontend", policy =>
                 {
                     policy.WithOrigins(
-                        // Local React dev server
-                        "http://localhost:5173",
-                        // TODO: Replace with your deployed Azure Static Web Apps frontend URL
-                        // e.g. https://<MY-STATIC-WEB-APP>.azurestaticapps.net
-                        "https://<MY-STATIC-WEB-APP>.azurestaticapps.net"
+                         "http://localhost:5173",
+            "https://wonderful-plant-07b10fe10.1.azurestaticapps.net"
                     )
                     .AllowAnyHeader()
                     .AllowAnyMethod();
