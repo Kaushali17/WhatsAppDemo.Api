@@ -36,10 +36,18 @@ namespace WhatsAppDemo.Api
 
             builder.Services.AddCors(options =>
             {
-                options.AddPolicy("FrontendDev", policy =>
-                    policy.WithOrigins("http://localhost:5173")
-                          .AllowAnyHeader()
-                          .AllowAnyMethod());
+                options.AddPolicy("Frontend", policy =>
+                {
+                    policy.WithOrigins(
+                        // Local React dev server
+                        "http://localhost:5173",
+                        // TODO: Replace with your deployed Azure Static Web Apps frontend URL
+                        // e.g. https://<MY-STATIC-WEB-APP>.azurestaticapps.net
+                        "https://<MY-STATIC-WEB-APP>.azurestaticapps.net"
+                    )
+                    .AllowAnyHeader()
+                    .AllowAnyMethod();
+                });
             });
 
             var app = builder.Build();
@@ -90,7 +98,7 @@ namespace WhatsAppDemo.Api
             // opened/previewed directly via their MediaUrl.
             app.UseStaticFiles();
 
-            app.UseCors("FrontendDev");
+            app.UseCors("Frontend");
 
             app.UseAuthorization();
 
