@@ -44,6 +44,32 @@ namespace WhatsAppDemo.Api
 
             var app = builder.Build();
 
+            // Safe startup validation of the Meta WhatsApp configuration. Logs which
+            // required keys are present/missing WITHOUT ever printing their values.
+            using (var scope = app.Services.CreateScope())
+            {
+                var settings = builder.Configuration.GetSection("WhatsApp").Get<WhatsAppSettings>()
+                    ?? new WhatsAppSettings();
+                var startupLogger = scope.ServiceProvider
+                    .GetRequiredService<ILoggerFactory>()
+                    .CreateLogger("WhatsAppConfig");
+
+                bool has(string? v) => !string.IsNullOrWhiteSpace(v);
+
+                startupLogger.LogInformation(
+                    "WhatsApp config check -> AccessToken: {Token}, PhoneNumberId: {Phone}, WabaId: {Waba}.",
+                    has(settings.AccessToken) ? "present" : "MISSING",
+                    has(settings.PhoneNumberId) ? "present" : "MISSING",
+                    has(settings.WabaId) ? "present" : "MISSING");
+
+                if (!has(settings.AccessToken) || !has(settings.PhoneNumberId) || !has(settings.WabaId))
+                {
+                    startupLogger.LogWarning(
+                        "One or more WhatsApp configuration values are missing. Real Meta " +
+                        "template retrieval/sending will be unavailable until they are set.");
+                }
+            }
+
             // Seed POC data at runtime (no migration required).
             using (var scope = app.Services.CreateScope())
             {

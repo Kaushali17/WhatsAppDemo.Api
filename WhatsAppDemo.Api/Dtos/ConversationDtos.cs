@@ -43,6 +43,10 @@ namespace WhatsAppDemo.Api.Dtos
 
         public string? WhatsAppMessageId { get; set; }
 
+        public string? Status { get; set; }
+
+        public string? TemplateName { get; set; }
+
         public DateTime CreatedAt { get; set; }
     }
 }

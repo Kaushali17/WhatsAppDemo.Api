@@ -48,6 +48,12 @@ namespace WhatsAppDemo.Api.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<string>("Status")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("TemplateName")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<string>("WhatsAppMessageId")
                         .HasColumnType("nvarchar(max)");
 
@@ -146,6 +152,9 @@ namespace WhatsAppDemo.Api.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<string>("AccessToken")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
 
@@ -154,6 +163,9 @@ namespace WhatsAppDemo.Api.Migrations
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsTestNumber")
                         .HasColumnType("bit");
 
                     b.Property<string>("PhoneNumberId")

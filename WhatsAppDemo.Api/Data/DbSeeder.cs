@@ -81,7 +81,8 @@ namespace WhatsAppDemo.Api.Data
                 Id = Guid.NewGuid(),
                 SalesUserId = testUser.Id,
                 PhoneNumberId = phoneNumberId,
-                DisplayPhoneNumber = "POC Test Number",
+                DisplayPhoneNumber = configuration["WhatsApp:DisplayPhoneNumber"] ?? "+91 97258 62006",
+                WabaId = configuration["WhatsApp:WabaId"],
                 IsActive = true,
                 CreatedAt = DateTime.UtcNow
             });

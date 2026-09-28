@@ -389,13 +389,70 @@ namespace WhatsAppDemo.Api.Services
             };
         }
 
+        public async Task UpdateMessageStatusAsync(string whatsAppMessageId, string status)
+        {
+            if (string.IsNullOrWhiteSpace(whatsAppMessageId) || string.IsNullOrWhiteSpace(status))
+            {
+                return;
+            }
+
+            var message = await _db.ChatMessages
+                .FirstOrDefaultAsync(m => m.WhatsAppMessageId == whatsAppMessageId);
+
+            if (message is null)
+            {
+                _logger.LogInformation(
+                    "Status webhook for unknown message id {MessageId} ignored.", whatsAppMessageId);
+                return;
+            }
+
+            // Do not downgrade a more advanced status (e.g. read -> delivered) that can
+            // arrive out of order from Meta.
+            if (!ShouldApplyStatus(message.Status, status))
+            {
+                return;
+            }
+
+            message.Status = status;
+            await _db.SaveChangesAsync();
+        }
+
+        private static bool ShouldApplyStatus(string? current, string next)
+        {
+            int Rank(string? s) => s?.ToLowerInvariant() switch
+            {
+                "failed" => 4,
+                "read" => 3,
+                "delivered" => 2,
+                "sent" => 1,
+                _ => 0
+            };
+
+            // "failed" always wins; otherwise only move forward.
+            return string.Equals(next, "failed", StringComparison.OrdinalIgnoreCase)
+                ? true
+                : Rank(next) > Rank(current);
+        }
+
         private async Task<Conversation> GetOrCreateOpenConversationAsync(
             Customer customer,
             WhatsAppBusinessNumber? businessNumber = null)
         {
-            var conversation = await _db.Conversations
-                .Where(c => c.CustomerId == customer.Id && c.Status == "Open")
-                .OrderByDescending(c => c.LastMessageAt)
+            // Conversation identity is scoped by (customer + business number): the same
+            // customer talking to two different WhatsApp business numbers must get two
+            // separate conversations. When the business number is unknown (legacy/global
+            // path), fall back to matching an open conversation for the customer.
+            IQueryable<Conversation> query = _db.Conversations
+                .Where(c => c.CustomerId == customer.Id && c.Status == "Open");
+
+            query = businessNumber is not null
+                ? query.Where(c => c.WhatsAppBusinessNumberId == businessNumber.Id ||
+                                   c.WhatsAppBusinessNumberId == null)
+                : query;
+
+            var conversation = await query
+                .OrderByDescending(c => c.WhatsAppBusinessNumberId != null)
+                .ThenByDescending(c => c.LastMessageAt)
                 .FirstOrDefaultAsync();
 
             if (conversation is null)
@@ -488,6 +545,8 @@ namespace WhatsAppDemo.Api.Services
                 MessageText = message.MessageText,
                 MediaUrl = message.MediaUrl,
                 WhatsAppMessageId = message.WhatsAppMessageId,
+                Status = message.Status,
+                TemplateName = message.TemplateName,
                 CreatedAt = message.CreatedAt
             };
 
@@ -495,11 +554,133 @@ namespace WhatsAppDemo.Api.Services
         /// Meta WhatsApp Cloud API integration
         ///
 
+        public async Task<GetTemplatesResult> GetTemplatesAsync(bool approvedOnly = true)
+        {
+            if (string.IsNullOrWhiteSpace(_settings.WabaId) ||
+                string.IsNullOrWhiteSpace(_settings.AccessToken))
+            {
+                _logger.LogError(
+                    "Cannot fetch WhatsApp templates: WABA id or access token is not configured.");
+
+                return new GetTemplatesResult
+                {
+                    Success = false,
+                    Error = "WhatsApp templates are not configured on the server."
+                };
+            }
+
+            // Real Meta source of truth: GET /{WABA_ID}/message_templates
+            var url =
+                $"{_settings.BaseUrl}/{_settings.ApiVersion}/{_settings.WabaId}/message_templates" +
+                "?fields=name,language,status,category,components&limit=200";
+
+            _logger.LogInformation(
+                "Fetching WhatsApp templates from Meta WABA: {WabaId}", _settings.WabaId);
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Authorization =
+                new AuthenticationHeaderValue("Bearer", _settings.AccessToken);
+
+            try
+            {
+                using var response = await _httpClient.SendAsync(request);
+                var responseContent = await response.Content.ReadAsStringAsync();
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogError(
+                        "Fetching WhatsApp templates failed. Status: {StatusCode}. Meta response: {Response}",
+                        (int)response.StatusCode, responseContent);
+
+                    return new GetTemplatesResult
+                    {
+                        Success = false,
+                        Error = ExtractMetaError(responseContent, response.StatusCode)
+                    };
+                }
+
+                var templates = ParseTemplates(responseContent, approvedOnly);
+
+                _logger.LogInformation(
+                    "Meta returned {Count} WhatsApp template(s){Filter}.",
+                    templates.Count, approvedOnly ? " (APPROVED only)" : string.Empty);
+
+                return new GetTemplatesResult
+                {
+                    Success = true,
+                    Templates = templates
+                };
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogError(ex,
+                    "Network error while fetching WhatsApp templates from the Meta Graph API.");
+
+                return new GetTemplatesResult
+                {
+                    Success = false,
+                    Error = "Failed to reach the WhatsApp service. Please try again later."
+                };
+            }
+        }
+
+        /// <summary>
+        /// Maps Meta's /message_templates payload to CRM template DTOs. Meta returns the
+        /// language under "language"; the CRM exposes it as "languageCode". When
+        /// <paramref name="approvedOnly"/> is true, only APPROVED templates are returned.
+        /// </summary>
+        private static List<WhatsAppTemplateDto> ParseTemplates(string responseContent, bool approvedOnly)
+        {
+            var results = new List<WhatsAppTemplateDto>();
+
+            using var doc = JsonDocument.Parse(responseContent);
+
+            if (!doc.RootElement.TryGetProperty("data", out var data) ||
+                data.ValueKind != JsonValueKind.Array)
+            {
+                return results;
+            }
+
+            foreach (var item in data.EnumerateArray())
+            {
+                var status = item.TryGetProperty("status", out var statusEl)
+                    ? statusEl.GetString() ?? string.Empty
+                    : string.Empty;
+
+                if (approvedOnly &&
+                    !string.Equals(status, "APPROVED", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                results.Add(new WhatsAppTemplateDto
+                {
+                    Name = item.TryGetProperty("name", out var nameEl)
+                        ? nameEl.GetString() ?? string.Empty
+                        : string.Empty,
+                    LanguageCode = item.TryGetProperty("language", out var langEl)
+                        ? langEl.GetString() ?? string.Empty
+                        : string.Empty,
+                    Status = status,
+                    Category = item.TryGetProperty("category", out var catEl)
+                        ? catEl.GetString() ?? string.Empty
+                        : string.Empty,
+                    Components = item.TryGetProperty("components", out var compEl)
+                        ? compEl.Clone()
+                        : null
+                });
+            }
+
+            return results;
+        }
+
         public async Task<WhatsAppSendMessageResponse> SendTemplateMessageAsync(
             string recipientPhoneNumber,
             string templateName,
             string languageCode,
-            List<string>? parameters = null)
+            List<string>? parameters = null,
+            string? senderPhoneNumberId = null,
+            string? senderAccessToken = null)
         {
             var template = new Dictionary<string, object>
             {
@@ -534,8 +715,215 @@ namespace WhatsAppDemo.Api.Services
                 template
             };
 
-            return await SendToMetaAsync(requestBody, "template", recipientPhoneNumber);
+            return await SendToMetaAsync(requestBody, "template", recipientPhoneNumber, senderPhoneNumberId, senderAccessToken);
         }
+
+        public async Task<SendTemplateMessageResponse> SendTemplateToCustomerAsync(
+            SendTemplateToCustomerRequest request)
+        {
+            // 1. Validate the customer exists.
+            var customer = await _db.Customers
+                .FirstOrDefaultAsync(c => c.Id == request.CustomerId);
+
+            if (customer is null)
+            {
+                return new SendTemplateMessageResponse
+                {
+                    Success = false,
+                    Error = "Customer not found.",
+                    Details = $"No customer exists with id '{request.CustomerId}'."
+                };
+            }
+
+            // 2. Validate the customer has a WhatsApp number.
+            if (string.IsNullOrWhiteSpace(customer.WhatsAppNumber))
+            {
+                return new SendTemplateMessageResponse
+                {
+                    Success = false,
+                    Error = "Customer has no WhatsApp number.",
+                    Details = "The selected customer does not have a WhatsApp number on record."
+                };
+            }
+
+            // 3/4. Normalize the number (do not blindly prepend a country code).
+            var phone = NormalizePhone(customer.WhatsAppNumber);
+
+            // 5. Resolve the WhatsApp Business number (sender). Precedence:
+            //    (a) explicit WhatsAppBusinessNumberId, (b) the supplied conversation's
+            //    business number, (c) the customer's open conversation for that number.
+            WhatsAppBusinessNumber? businessNumber = null;
+            if (request.WhatsAppBusinessNumberId is Guid businessNumberId)
+            {
+                businessNumber = await _db.WhatsAppBusinessNumbers
+                    .FirstOrDefaultAsync(n => n.Id == businessNumberId);
+
+                if (businessNumber is null)
+                {
+                    return new SendTemplateMessageResponse
+                    {
+                        Success = false,
+                        Error = "WhatsApp business number not found.",
+                        Details = $"No WhatsApp business number exists with id '{businessNumberId}'."
+                    };
+                }
+
+                if (!businessNumber.IsActive)
+                {
+                    return new SendTemplateMessageResponse
+                    {
+                        Success = false,
+                        Error = "WhatsApp business number is inactive.",
+                        Details = $"The selected WhatsApp business number '{businessNumber.DisplayPhoneNumber}' is not active."
+                    };
+                }
+
+                if (string.IsNullOrWhiteSpace(businessNumber.PhoneNumberId))
+                {
+                    return new SendTemplateMessageResponse
+                    {
+                        Success = false,
+                        Error = "WhatsApp business number is not configured.",
+                        Details = "The selected WhatsApp business number has no Meta phone_number_id."
+                    };
+                }
+            }
+
+            // Prefer the caller-supplied conversation when valid and belonging to this
+            // customer; otherwise reuse/create the customer's open conversation scoped to
+            // the selected business number, preserving the salesperson relationship.
+            Conversation? conversation = null;
+            if (request.ConversationId is Guid conversationId)
+            {
+                conversation = await _db.Conversations
+                    .FirstOrDefaultAsync(c => c.Id == conversationId && c.CustomerId == customer.Id);
+            }
+
+            conversation ??= await GetOrCreateOpenConversationAsync(customer, businessNumber);
+
+            // Ensure we send from the number that owns this conversation when one was
+            // not explicitly selected, so a send never leaks onto another number.
+            businessNumber ??= conversation.WhatsAppBusinessNumberId is Guid convNumberId
+                ? await _db.WhatsAppBusinessNumbers.FirstOrDefaultAsync(n => n.Id == convNumberId)
+                : null;
+
+            // Resolve the sender phone_number_id + token. Per-number token when present,
+            // otherwise the globally configured credential (single-number POC default).
+            var senderPhoneNumberId = !string.IsNullOrWhiteSpace(businessNumber?.PhoneNumberId)
+                ? businessNumber!.PhoneNumberId
+                : _settings.PhoneNumberId;
+
+            var senderAccessToken = string.IsNullOrWhiteSpace(businessNumber?.AccessToken)
+                ? _settings.AccessToken
+                : businessNumber!.AccessToken;
+
+            var textParameters = request.Parameters
+                .Where(p => string.Equals(p.Type, "text", StringComparison.OrdinalIgnoreCase))
+                .Select(p => p.Text)
+                .ToList();
+
+            // 5b. Validate the selected template + language actually exists and is
+            // APPROVED in the configured Meta WABA. Never call Meta with an arbitrary
+            // (potentially fake) template name.
+            var templatesResult = await GetTemplatesAsync(approvedOnly: true);
+            if (templatesResult.Success)
+            {
+                var match = templatesResult.Templates.FirstOrDefault(t =>
+                    string.Equals(t.Name, request.TemplateName, StringComparison.Ordinal) &&
+                    string.Equals(t.LanguageCode, request.LanguageCode, StringComparison.OrdinalIgnoreCase));
+
+                if (match is null)
+                {
+                    _logger.LogWarning(
+                        "Rejected send: template '{Template}' ({Language}) is not an APPROVED template in WABA {WabaId}.",
+                        request.TemplateName, request.LanguageCode, _settings.WabaId);
+
+                    return new SendTemplateMessageResponse
+                    {
+                        Success = false,
+                        Error = "Selected WhatsApp template is not an approved template in the configured Meta WhatsApp Business Account.",
+                        Details = $"Template '{request.TemplateName}' with language '{request.LanguageCode}' was not found among APPROVED templates."
+                    };
+                }
+
+                _logger.LogInformation(
+                    "Selected template: {TemplateName}, language: {LanguageCode}, status: {Status}",
+                    match.Name, match.LanguageCode, match.Status);
+            }
+            else
+            {
+                // If we cannot verify against Meta, do not risk sending a fake template.
+                return new SendTemplateMessageResponse
+                {
+                    Success = false,
+                    Error = "Could not verify the template against the Meta WhatsApp Business Account.",
+                    Details = templatesResult.Error
+                };
+            }
+
+            // 6. Send through the existing template method (builds template +
+            // components/parameters and calls the Meta Cloud API).
+            var metaResult = await SendTemplateMessageAsync(
+                phone,
+                request.TemplateName,
+                request.LanguageCode,
+                textParameters.Count > 0 ? textParameters : null,
+                senderPhoneNumberId,
+                senderAccessToken);
+
+            // 7. Do NOT persist the message as sent when Meta returns an error.
+            if (!metaResult.Success)
+            {
+                _logger.LogWarning(
+                    "Template '{Template}' send failed for customer {CustomerId}: {Error}",
+                    request.TemplateName, request.CustomerId, metaResult.Error);
+
+                return new SendTemplateMessageResponse
+                {
+                    Success = false,
+                    ConversationId = conversation.Id,
+                    Error = "Meta WhatsApp API error",
+                    Details = metaResult.Error
+                };
+            }
+
+            // 8. Persist the outgoing message against the conversation.
+            // Ensure the conversation is tied to the sender business number.
+            if (businessNumber is not null && conversation.WhatsAppBusinessNumberId != businessNumber.Id)
+            {
+                conversation.WhatsAppBusinessNumberId = businessNumber.Id;
+            }
+
+            var chatMessage = new ChatMessages
+            {
+                Id = Guid.NewGuid(),
+                ConversationId = conversation.Id,
+                Direction = "Outgoing",
+                MessageType = "Text",
+                MessageText = BuildTemplatePreview(request.TemplateName, textParameters),
+                WhatsAppMessageId = metaResult.MessageId,
+                Status = "sent",
+                TemplateName = request.TemplateName,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _db.ChatMessages.Add(chatMessage);
+            conversation.LastMessageAt = chatMessage.CreatedAt;
+
+            await _db.SaveChangesAsync();
+
+            return new SendTemplateMessageResponse
+            {
+                Success = true,
+                MessageId = metaResult.MessageId,
+                ConversationId = conversation.Id
+            };
+        }
+
+        private static string BuildTemplatePreview(string templateName, List<string> parameters)
+            => parameters.Count == 0
+                ? $"[Template: {templateName}]"
+                : $"[Template: {templateName}] {string.Join(" | ", parameters)}";
 
         public async Task<WhatsAppSendMessageResponse> SendTextMessageAsync(
             string recipientPhoneNumber,
@@ -629,14 +1017,19 @@ namespace WhatsAppDemo.Api.Services
             object requestBody,
             string messageKind,
             string recipientPhoneNumber,
-            string? senderPhoneNumberId = null)
+            string? senderPhoneNumberId = null,
+            string? senderAccessToken = null)
         {
             var phoneNumberId = string.IsNullOrWhiteSpace(senderPhoneNumberId)
                 ? _settings.PhoneNumberId
                 : senderPhoneNumberId;
 
+            var accessToken = string.IsNullOrWhiteSpace(senderAccessToken)
+                ? _settings.AccessToken
+                : senderAccessToken;
+
             if (string.IsNullOrWhiteSpace(phoneNumberId) ||
-                string.IsNullOrWhiteSpace(_settings.AccessToken))
+                string.IsNullOrWhiteSpace(accessToken))
             {
                 _logger.LogError(
                     "WhatsApp configuration is incomplete. PhoneNumberId/AccessToken are not set.");
@@ -655,7 +1048,7 @@ namespace WhatsAppDemo.Api.Services
 
             using var request = new HttpRequestMessage(HttpMethod.Post, url);
             request.Headers.Authorization =
-                new AuthenticationHeaderValue("Bearer", _settings.AccessToken);
+                new AuthenticationHeaderValue("Bearer", accessToken);
             request.Content = new StringContent(json, Encoding.UTF8, "application/json");
 
             try

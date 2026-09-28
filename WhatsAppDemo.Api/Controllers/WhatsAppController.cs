@@ -1,7 +1,9 @@
 using Microsoft.AspNetCore.Mvc;
+using WhatsAppDemo.Api.Data;
 using WhatsAppDemo.Api.Dtos;
 using WhatsAppDemo.Api.Models;
 using WhatsAppDemo.Api.Services;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
 
@@ -15,19 +17,92 @@ namespace WhatsAppDemo.Api.Controllers
         private readonly WhatsAppSettings _settings;
         private readonly ILogger<WhatsAppController> _logger;
         private readonly IMediaStorageService _mediaStorage;
+        private readonly AppDbContext _db;
 
         public WhatsAppController(
             IWhatsAppService whatsAppService,
             IOptions<WhatsAppSettings> options,
             ILogger<WhatsAppController> logger,
-            IMediaStorageService mediaStorage)
+            IMediaStorageService mediaStorage,
+            AppDbContext db)
         {
             _whatsAppService = whatsAppService;
             _settings = options.Value;
             _logger = logger;
             _mediaStorage = mediaStorage;
+            _db = db;
         }
 
+        /// <summary>
+        /// Returns the registered WhatsApp Business numbers in a stable, safe shape for
+        /// the frontend. Never exposes the Meta access token or any other credential.
+        /// </summary>
+        /// <remarks>
+        /// Sample response:
+        ///
+        ///     GET /api/whatsapp/numbers
+        ///     [
+        ///        {
+        ///          "id": "guid",
+        ///          "phoneNumberId": "1367575223100221",
+        ///          "displayPhoneNumber": "+91 97258 62006",
+        ///          "assignedUserId": "guid-or-null",
+        ///          "isActive": true
+        ///        }
+        ///     ]
+        /// </remarks>
+        [HttpGet("numbers")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        public async Task<IActionResult> GetNumbers()
+        {
+            var numbers = await _db.WhatsAppBusinessNumbers
+                .OrderBy(n => n.DisplayPhoneNumber)
+                .Select(n => new
+                {
+                    id = n.Id,
+                    phoneNumberId = n.PhoneNumberId,
+                    displayPhoneNumber = n.DisplayPhoneNumber,
+                    assignedUserId = (Guid?)n.SalesUserId,
+                    isActive = n.IsActive
+                })
+                .ToListAsync();
+
+            return Ok(numbers);
+        }
+
+        /// <summary>
+        /// Returns the REAL WhatsApp message templates from the configured Meta WABA
+        /// (/message_templates). Only APPROVED templates are returned by default so the
+        /// CRM can only offer sendable templates. Never exposes the Meta access token.
+        /// </summary>
+        /// <remarks>
+        /// Sample response:
+        ///
+        ///     GET /api/whatsapp/templates
+        ///     [
+        ///        {
+        ///          "name": "&lt;real meta template name&gt;",
+        ///          "languageCode": "&lt;real meta language code&gt;",
+        ///          "status": "APPROVED",
+        ///          "category": "UTILITY",
+        ///          "components": [ ... ]
+        ///        }
+        ///     ]
+        /// </remarks>
+        [HttpGet("templates")]
+        [ProducesResponseType(typeof(IEnumerable<WhatsAppTemplateDto>), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status502BadGateway)]
+        public async Task<IActionResult> GetTemplates([FromQuery] bool includeAll = false)
+        {
+            var result = await _whatsAppService.GetTemplatesAsync(approvedOnly: !includeAll);
+
+            if (!result.Success)
+            {
+                return StatusCode(StatusCodes.Status502BadGateway, new { error = result.Error });
+            }
+
+            return Ok(result.Templates);
+        }
         /// <summary>
         /// Meta webhook verification (GET challenge). Meta calls this once when you
         /// subscribe the webhook URL in the Meta App dashboard. 179702
@@ -149,6 +224,15 @@ namespace WhatsAppDemo.Api.Controllers
             // Try Meta's real payload first.
             var metaRequests = TryParseMetaWebhook(body);
 
+            // Process delivery-status updates (sent/delivered/read/failed) that Meta
+            // sends for previously sent outgoing messages. This does not create
+            // customers/conversations; it only updates existing message statuses.
+            var statusUpdates = TryParseMetaStatuses(body);
+            foreach (var (messageId, status) in statusUpdates)
+            {
+                await _whatsAppService.UpdateMessageStatusAsync(messageId, status);
+            }
+
             if (metaRequests.Count > 0)
             {
                 foreach (var req in metaRequests)
@@ -163,6 +247,12 @@ namespace WhatsAppDemo.Api.Controllers
 
                 // Meta expects a 200 OK acknowledgement.
                 return Ok(new { received = metaRequests.Count });
+            }
+
+            // A status-only webhook (no messages) is valid; acknowledge it.
+            if (statusUpdates.Count > 0)
+            {
+                return Ok(new { statuses = statusUpdates.Count });
             }
 
             // Fall back to the simple mock payload.
@@ -345,6 +435,54 @@ namespace WhatsAppDemo.Api.Controllers
         }
 
         /// <summary>
+        /// Extracts delivery-status updates (sent/delivered/read/failed) from Meta's
+        /// webhook payload. Returns (whatsAppMessageId, status) pairs.
+        /// </summary>
+        private static List<(string MessageId, string Status)> TryParseMetaStatuses(JsonElement body)
+        {
+            var results = new List<(string, string)>();
+
+            if (body.ValueKind != JsonValueKind.Object ||
+                !body.TryGetProperty("entry", out var entries) ||
+                entries.ValueKind != JsonValueKind.Array)
+            {
+                return results;
+            }
+
+            foreach (var entry in entries.EnumerateArray())
+            {
+                if (!entry.TryGetProperty("changes", out var changes) ||
+                    changes.ValueKind != JsonValueKind.Array)
+                {
+                    continue;
+                }
+
+                foreach (var change in changes.EnumerateArray())
+                {
+                    if (!change.TryGetProperty("value", out var value) ||
+                        !value.TryGetProperty("statuses", out var statuses) ||
+                        statuses.ValueKind != JsonValueKind.Array)
+                    {
+                        continue;
+                    }
+
+                    foreach (var statusEl in statuses.EnumerateArray())
+                    {
+                        var id = statusEl.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
+                        var status = statusEl.TryGetProperty("status", out var stEl) ? stEl.GetString() : null;
+
+                        if (!string.IsNullOrWhiteSpace(id) && !string.IsNullOrWhiteSpace(status))
+                        {
+                            results.Add((id!, status!));
+                        }
+                    }
+                }
+            }
+
+            return results;
+        }
+
+        /// <summary>
         /// Parses the simple mock webhook payload.
         /// </summary>
         private static ReceiveWhatsAppMessageRequest? ParseMockWebhook(JsonElement body)
@@ -406,6 +544,52 @@ namespace WhatsAppDemo.Api.Controllers
 
             if (!result.Success)
             {
+                return BadRequest(result);
+            }
+
+            return Ok(result);
+        }
+
+        /// <summary>
+        /// Sends an approved WhatsApp template to an existing CRM customer. Creates or
+        /// reuses the customer's open conversation and stores the outgoing message.
+        /// </summary>
+        /// <remarks>
+        /// Sample request:
+        ///
+        ///     POST /api/whatsapp/send-template-to-customer
+        ///     {
+        ///        "customerId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        ///        "templateName": "hello_customer",
+        ///        "languageCode": "en_US",
+        ///        "parameters": [
+        ///            { "type": "text", "text": "Kaushali" },
+        ///            { "type": "text", "text": "ABC Sales" }
+        ///        ]
+        ///     }
+        /// </remarks>
+        [HttpPost("send-template-to-customer")]
+        [ProducesResponseType(typeof(SendTemplateMessageResponse), StatusCodes.Status200OK)]
+        [ProducesResponseType(typeof(SendTemplateMessageResponse), StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(typeof(SendTemplateMessageResponse), StatusCodes.Status404NotFound)]
+        public async Task<IActionResult> SendTemplateToCustomer(
+            [FromBody] SendTemplateToCustomerRequest request)
+        {
+            if (!ModelState.IsValid)
+            {
+                return BadRequest(ModelState);
+            }
+
+            var result = await _whatsAppService.SendTemplateToCustomerAsync(request);
+
+            if (!result.Success)
+            {
+                if (string.Equals(result.Error, "Customer not found.", StringComparison.Ordinal) ||
+                    string.Equals(result.Error, "WhatsApp business number not found.", StringComparison.Ordinal))
+                {
+                    return NotFound(result);
+                }
+
                 return BadRequest(result);
             }
 

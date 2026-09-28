@@ -5,6 +5,13 @@
         public string BaseUrl { get; set; } = string.Empty;
         public string ApiVersion { get; set; } = string.Empty;
         public string PhoneNumberId { get; set; } = string.Empty;
+
+        /// <summary>
+        /// WhatsApp Business Account (WABA) id. Required to query the real approved
+        /// message templates that live in Meta WhatsApp Manager.
+        /// </summary>
+        public string WabaId { get; set; } = string.Empty;
+
         public string AccessToken { get; set; } = string.Empty;
 
         /// <summary>

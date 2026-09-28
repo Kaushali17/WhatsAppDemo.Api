@@ -22,6 +22,8 @@ namespace WhatsAppDemo.Api.Dtos
 
         public bool IsActive { get; set; }
 
+        public bool IsTestNumber { get; set; }
+
         public DateTime CreatedAt { get; set; }
 
         public DateTime? UpdatedAt { get; set; }
@@ -40,6 +42,14 @@ namespace WhatsAppDemo.Api.Dtos
 
         public string? WabaId { get; set; }
 
+        /// <summary>
+        /// Optional per-number access token. When omitted, the globally configured
+        /// token is used. Never returned by any read API.
+        /// </summary>
+        public string? AccessToken { get; set; }
+
+        public bool IsTestNumber { get; set; }
+
         public bool IsActive { get; set; } = true;
     }
 
@@ -55,6 +65,14 @@ namespace WhatsAppDemo.Api.Dtos
         public string DisplayPhoneNumber { get; set; } = string.Empty;
 
         public string? WabaId { get; set; }
+
+        /// <summary>
+        /// Optional per-number access token. When omitted, the existing stored token is
+        /// left unchanged. Never returned by any read API.
+        /// </summary>
+        public string? AccessToken { get; set; }
+
+        public bool IsTestNumber { get; set; }
 
         public bool IsActive { get; set; } = true;
     }

@@ -18,6 +18,19 @@
 
         public string? WhatsAppMessageId { get; set; }
 
+        /// <summary>
+        /// Delivery status reported by Meta's status webhooks:
+        /// "sent", "delivered", "read", "failed". Defaults to "sent" for outgoing
+        /// messages accepted by Meta; null for incoming messages.
+        /// </summary>
+        public string? Status { get; set; }
+
+        /// <summary>
+        /// The approved WhatsApp template name used for business-initiated messages.
+        /// Null for free-form text/media messages.
+        /// </summary>
+        public string? TemplateName { get; set; }
+
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
         // Navigation property

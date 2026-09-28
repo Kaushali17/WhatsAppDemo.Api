@@ -87,6 +87,8 @@ namespace WhatsAppDemo.Api.Controllers
                 PhoneNumberId = request.PhoneNumberId,
                 DisplayPhoneNumber = request.DisplayPhoneNumber,
                 WabaId = request.WabaId,
+                AccessToken = string.IsNullOrWhiteSpace(request.AccessToken) ? null : request.AccessToken,
+                IsTestNumber = request.IsTestNumber,
                 IsActive = request.IsActive,
                 CreatedAt = DateTime.UtcNow
             };
@@ -144,6 +146,13 @@ namespace WhatsAppDemo.Api.Controllers
             number.PhoneNumberId = request.PhoneNumberId;
             number.DisplayPhoneNumber = request.DisplayPhoneNumber;
             number.WabaId = request.WabaId;
+            // Only overwrite the stored token when a new one is supplied; otherwise keep
+            // the existing secret untouched.
+            if (!string.IsNullOrWhiteSpace(request.AccessToken))
+            {
+                number.AccessToken = request.AccessToken;
+            }
+            number.IsTestNumber = request.IsTestNumber;
             number.IsActive = request.IsActive;
             number.UpdatedAt = DateTime.UtcNow;
 
@@ -180,6 +189,7 @@ namespace WhatsAppDemo.Api.Controllers
             DisplayPhoneNumber = n.DisplayPhoneNumber,
             WabaId = n.WabaId,
             IsActive = n.IsActive,
+            IsTestNumber = n.IsTestNumber,
             CreatedAt = n.CreatedAt,
             UpdatedAt = n.UpdatedAt
         };
