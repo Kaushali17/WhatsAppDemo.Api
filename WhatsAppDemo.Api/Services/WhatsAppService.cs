@@ -724,7 +724,8 @@ namespace WhatsAppDemo.Api.Services
             // 1. The selected WhatsApp Business number is the source of truth for the
             //    sender. It is required; outbound sending never falls back to the global
             //    (test) PhoneNumberId.
-            if (request.WhatsAppBusinessNumberId == Guid.Empty)
+            if (request.WhatsAppBusinessNumberId is not Guid selectedBusinessNumberId ||
+                selectedBusinessNumberId == Guid.Empty)
             {
                 return new SendTemplateMessageResponse
                 {
@@ -735,7 +736,7 @@ namespace WhatsAppDemo.Api.Services
             }
 
             var businessNumber = await _db.WhatsAppBusinessNumbers
-                .FirstOrDefaultAsync(n => n.Id == request.WhatsAppBusinessNumberId);
+                .FirstOrDefaultAsync(n => n.Id == selectedBusinessNumberId);
 
             if (businessNumber is null)
             {
@@ -743,7 +744,7 @@ namespace WhatsAppDemo.Api.Services
                 {
                     Success = false,
                     Error = "The selected WhatsApp Business number was not found.",
-                    Details = $"No WhatsApp Business number exists with id '{request.WhatsAppBusinessNumberId}'."
+                    Details = $"No WhatsApp Business number exists with id '{selectedBusinessNumberId}'."
                 };
             }
 
