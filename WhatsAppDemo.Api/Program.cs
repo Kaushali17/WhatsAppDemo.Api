@@ -118,6 +118,38 @@ namespace WhatsAppDemo.Api
 
             app.UseAuthorization();
 
+            // TEMPORARY DIAGNOSTIC ENDPOINT - remove after troubleshooting.
+            // Surfaces the real database/migration error as JSON so it can be read
+            // directly in the browser (e.g. GET /api/diag/db) without Azure log access.
+            app.MapGet("/api/diag/db", async (AppDbContext db) =>
+            {
+                try
+                {
+                    var canConnect = await db.Database.CanConnectAsync();
+                    var pending = (await db.Database.GetPendingMigrationsAsync()).ToList();
+                    var applied = (await db.Database.GetAppliedMigrationsAsync()).ToList();
+
+                    await db.Database.MigrateAsync();
+
+                    return Results.Ok(new
+                    {
+                        canConnect,
+                        pendingMigrationsBeforeMigrate = pending,
+                        appliedMigrations = applied,
+                        message = "MigrateAsync completed successfully."
+                    });
+                }
+                catch (Exception ex)
+                {
+                    return Results.Json(new
+                    {
+                        error = ex.GetType().FullName,
+                        message = ex.Message,
+                        inner = ex.InnerException?.Message,
+                        stackTrace = ex.ToString()
+                    }, statusCode: 500);
+                }
+            });
 
             app.MapControllers();
 
