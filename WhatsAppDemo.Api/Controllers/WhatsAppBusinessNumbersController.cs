@@ -12,6 +12,9 @@ namespace WhatsAppDemo.Api.Controllers
     /// returned here; they remain server-side configuration.
     /// </summary>
     [ApiController]
+    // Primary route matches the CRM admin spec; the hyphenated route is kept as an
+    // alias so any existing clients continue to work.
+    [Route("api/whatsapp/business-numbers")]
     [Route("api/whatsapp-business-numbers")]
     public class WhatsAppBusinessNumbersController : ControllerBase
     {
