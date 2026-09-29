@@ -821,6 +821,20 @@ namespace WhatsAppDemo.Api.Services
                 ? _settings.AccessToken
                 : businessNumber.AccessToken;
 
+            // Diagnostic: prove exactly which WhatsAppBusinessNumbers row was selected
+            // for this salesperson/number. Never logs the token value.
+            _logger.LogInformation(
+                "Outbound sender resolved -> BusinessNumberId: {BusinessNumberId} | SalesUserId: {SalesUserId} | " +
+                "PhoneNumberId: {PhoneNumberId} | DisplayPhoneNumber: {DisplayPhoneNumber} | WabaId: {WabaId} | " +
+                "RowAccessTokenIsNull: {RowTokenNull} | UsingGlobalToken: {UsingGlobalToken}",
+                businessNumber.Id,
+                businessNumber.SalesUserId,
+                businessNumber.PhoneNumberId,
+                businessNumber.DisplayPhoneNumber,
+                businessNumber.WabaId,
+                string.IsNullOrWhiteSpace(businessNumber.AccessToken),
+                string.IsNullOrWhiteSpace(businessNumber.AccessToken));
+
             if (string.IsNullOrWhiteSpace(senderAccessToken))
             {
                 return new SendTemplateMessageResponse
@@ -1145,6 +1159,21 @@ namespace WhatsAppDemo.Api.Services
 
             var url =
                 $"{_settings.BaseUrl}/{_settings.ApiVersion}/{phoneNumberId}/messages";
+
+            // Diagnostic: prove exactly which sender identity and target URL are used
+            // for this send. Never logs the token value, only whether one is present
+            // and whether it came from a per-number record or the global config.
+            _logger.LogInformation(
+                "WhatsApp {MessageKind} send -> URL: {Url} | PhoneNumberId: {PhoneNumberId} | " +
+                "PhoneNumberIdSource: {PhoneSource} | AccessTokenPresent: {TokenPresent} | " +
+                "AccessTokenSource: {TokenSource} | Recipient: {Recipient}",
+                messageKind,
+                url,
+                phoneNumberId,
+                string.IsNullOrWhiteSpace(senderPhoneNumberId) ? "GlobalConfig" : "BusinessNumberRecord",
+                !string.IsNullOrWhiteSpace(accessToken),
+                string.IsNullOrWhiteSpace(senderAccessToken) ? "GlobalConfig" : "BusinessNumberRecord",
+                MaskPhone(recipientPhoneNumber));
 
             var json = JsonSerializer.Serialize(requestBody);
 

@@ -451,7 +451,7 @@ namespace WhatsAppDemo.Api.Controllers
         /// Extracts delivery-status updates (sent/delivered/read/failed) from Meta's
         /// webhook payload. Returns (whatsAppMessageId, status) pairs.
         /// </summary>
-        private static List<(string MessageId, string Status)> TryParseMetaStatuses(JsonElement body)
+        private List<(string MessageId, string Status)> TryParseMetaStatuses(JsonElement body)
         {
             var results = new List<(string, string)>();
 
@@ -483,6 +483,19 @@ namespace WhatsAppDemo.Api.Controllers
                     {
                         var id = statusEl.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
                         var status = statusEl.TryGetProperty("status", out var stEl) ? stEl.GetString() : null;
+
+                        // Meta attaches an "errors" array to a "failed" status explaining
+                        // WHY delivery failed (e.g. code 131047 re-engagement / outside the
+                        // 24-hour window). Surface it so undelivered messages are diagnosable
+                        // instead of silently stored as "failed".
+                        if (string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase) &&
+                            statusEl.TryGetProperty("errors", out var errors) &&
+                            errors.ValueKind == JsonValueKind.Array)
+                        {
+                            _logger.LogWarning(
+                                "WhatsApp message {MessageId} FAILED delivery. Meta errors: {Errors}",
+                                id, errors.GetRawText());
+                        }
 
                         if (!string.IsNullOrWhiteSpace(id) && !string.IsNullOrWhiteSpace(status))
                         {
