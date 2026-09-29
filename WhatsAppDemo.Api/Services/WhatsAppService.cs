@@ -132,13 +132,23 @@ namespace WhatsAppDemo.Api.Services
             // for backward compatibility.
             var (senderPhoneNumberId, senderAccessToken) = await ResolveOutgoingSenderAsync(conversation);
 
+            // Whether we can deliver for real depends on the RESOLVED sender (the
+            // conversation's business number, or the global config as fallback) having
+            // both a PhoneNumberId and an access token - NOT on the global _settings
+            // alone. Gating on _settings.IsConfigured would wrongly fall back to the
+            // mock provider whenever the global config is empty even though the
+            // per-number credentials are present, silently "sending" without delivering.
+            var canDeliverViaMeta =
+                !string.IsNullOrWhiteSpace(senderPhoneNumberId) &&
+                !string.IsNullOrWhiteSpace(senderAccessToken);
+
             // Deliver the message for real through the Meta Cloud API so the
             // recipient actually receives it. The mock provider only simulates
             // delivery, so it is used purely as a fallback when Meta is not
             // configured (keeps the POC working offline).
             string? deliveredMessageId;
 
-            if (messageType == "Text" && _settings.IsConfigured)
+            if (messageType == "Text" && canDeliverViaMeta)
             {
                 var metaResult = await SendToMetaAsync(
                     new
@@ -164,7 +174,7 @@ namespace WhatsAppDemo.Api.Services
 
                 deliveredMessageId = metaResult.MessageId;
             }
-            else if (messageType != "Text" && _settings.IsConfigured)
+            else if (messageType != "Text" && canDeliverViaMeta)
             {
                 // Media (image/document): upload the file to Meta to obtain a media id,
                 // then send a message that references it. Falls back to the mock
