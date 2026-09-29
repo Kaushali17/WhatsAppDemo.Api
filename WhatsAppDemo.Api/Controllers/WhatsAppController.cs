@@ -108,17 +108,30 @@ namespace WhatsAppDemo.Api.Controllers
         /// subscribe the webhook URL in the Meta App dashboard. 179702
         /// </summary>
         [HttpGet("webhook")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status403Forbidden)]
         public IActionResult VerifyWebhook(
             [FromQuery(Name = "hub.mode")] string? mode,
             [FromQuery(Name = "hub.verify_token")] string? verifyToken,
             [FromQuery(Name = "hub.challenge")] string? challenge)
         {
-            if (mode == "subscribe" && verifyToken == _settings.VerifyToken)
+            _logger.LogInformation(
+                "WhatsApp webhook verification request received. Mode: {Mode}.", mode);
+
+            var expectedToken = _settings.EffectiveWebhookVerifyToken;
+            var tokenMatched = !string.IsNullOrEmpty(expectedToken) && verifyToken == expectedToken;
+
+            _logger.LogInformation(
+                "WhatsApp webhook verification token match: {TokenMatched}.", tokenMatched);
+
+            if (mode == "subscribe" && tokenMatched)
             {
+                _logger.LogInformation("WhatsApp webhook verification successful.");
                 return Content(challenge ?? string.Empty, "text/plain");
             }
 
-            return Forbid();
+            _logger.LogWarning("WhatsApp webhook verification failed.");
+            return StatusCode(StatusCodes.Status403Forbidden);
         }
 
         /// <summary>
