@@ -38,11 +38,10 @@ namespace WhatsAppDemo.Api.Dtos
         /// <summary>
         /// Required. Selects the real WhatsApp Business number (sender) to send from.
         /// This is the source of truth for the Meta PhoneNumberId; outbound sending
-        /// never falls back to a global/test phone number. Kept nullable at the binding
-        /// layer so a missing/invalid value returns a clean validation error instead of
-        /// a raw JSON deserialization failure; it is validated server-side.
+        /// never falls back to a global/test phone number. Validation is enforced
+        /// server-side (in the service) so a missing value returns a clean, consistent
+        /// error body rather than a raw model-binding/JSON error.
         /// </summary>
-        [Required(ErrorMessage = "WhatsAppBusinessNumberId is required.")]
         public Guid? WhatsAppBusinessNumberId { get; set; }
 
         [Required]
