@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using WhatsAppDemo.Api.Data;
 using WhatsAppDemo.Api.Dtos;
 using WhatsAppDemo.Api.Models;
+using WhatsAppDemo.Api.Services;
 
 namespace WhatsAppDemo.Api.Controllers
 {
@@ -11,19 +12,33 @@ namespace WhatsAppDemo.Api.Controllers
     public class ConversationsController : ControllerBase
     {
         private readonly AppDbContext _db;
+        private readonly IUserAccessResolver _accessResolver;
 
-        public ConversationsController(AppDbContext db)
+        public ConversationsController(AppDbContext db, IUserAccessResolver accessResolver)
         {
             _db = db;
+            _accessResolver = accessResolver;
         }
 
         [HttpGet]
-        public async Task<ActionResult<IEnumerable<ConversationDto>>> GetAll()
+        public async Task<ActionResult<IEnumerable<ConversationDto>>> GetAll([FromQuery] Guid? salesUserId = null)
         {
-            var conversations = await _db.Conversations
+            var scope = await _accessResolver.ResolveAsync(salesUserId);
+
+            var query = _db.Conversations
                 .Include(c => c.Customer)
                 .Include(c => c.AssignedUser)
                 .Include(c => c.WhatsAppBusinessNumber)
+                .AsQueryable();
+
+            // Salesperson users only ever see their own conversations; Admin (and the
+            // legacy unscoped path) see all.
+            if (!scope.CanSeeAll)
+            {
+                query = query.Where(c => c.AssignedUserId == scope.SalesUserId);
+            }
+
+            var conversations = await query
                 .OrderByDescending(c => c.LastMessageAt)
                 .ToListAsync();
 
@@ -53,7 +68,7 @@ namespace WhatsAppDemo.Api.Controllers
         }
 
         [HttpGet("{id:guid}")]
-        public async Task<ActionResult<ConversationDto>> GetById(Guid id)
+        public async Task<ActionResult<ConversationDto>> GetById(Guid id, [FromQuery] Guid? salesUserId = null)
         {
             var conversation = await _db.Conversations
                 .Include(c => c.Customer)
@@ -66,22 +81,38 @@ namespace WhatsAppDemo.Api.Controllers
                 return NotFound(new { message = $"Conversation '{id}' was not found." });
             }
 
+            var scope = await _accessResolver.ResolveAsync(salesUserId);
+            if (!scope.CanSeeAll && conversation.AssignedUserId != scope.SalesUserId)
+            {
+                return StatusCode(StatusCodes.Status403Forbidden,
+                    new { message = "You do not have access to this conversation." });
+            }
+
             return Ok(MapToDto(conversation));
         }
 
         [HttpGet("customer/{customerId:guid}")]
-        public async Task<ActionResult<IEnumerable<ConversationDto>>> GetByCustomer(Guid customerId)
+        public async Task<ActionResult<IEnumerable<ConversationDto>>> GetByCustomer(Guid customerId, [FromQuery] Guid? salesUserId = null)
         {
             if (!await _db.Customers.AnyAsync(c => c.Id == customerId))
             {
                 return NotFound(new { message = $"Customer '{customerId}' was not found." });
             }
 
-            var conversations = await _db.Conversations
+            var scope = await _accessResolver.ResolveAsync(salesUserId);
+
+            var query = _db.Conversations
                 .Include(c => c.Customer)
                 .Include(c => c.AssignedUser)
                 .Include(c => c.WhatsAppBusinessNumber)
-                .Where(c => c.CustomerId == customerId)
+                .Where(c => c.CustomerId == customerId);
+
+            if (!scope.CanSeeAll)
+            {
+                query = query.Where(c => c.AssignedUserId == scope.SalesUserId);
+            }
+
+            var conversations = await query
                 .OrderByDescending(c => c.LastMessageAt)
                 .ToListAsync();
 
@@ -141,11 +172,21 @@ namespace WhatsAppDemo.Api.Controllers
         }
 
         [HttpGet("{conversationId:guid}/messages")]
-        public async Task<ActionResult<IEnumerable<ChatMessageDto>>> GetMessages(Guid conversationId)
+        public async Task<ActionResult<IEnumerable<ChatMessageDto>>> GetMessages(Guid conversationId, [FromQuery] Guid? salesUserId = null)
         {
-            if (!await _db.Conversations.AnyAsync(c => c.Id == conversationId))
+            var conversation = await _db.Conversations
+                .FirstOrDefaultAsync(c => c.Id == conversationId);
+
+            if (conversation is null)
             {
                 return NotFound(new { message = $"Conversation '{conversationId}' was not found." });
+            }
+
+            var scope = await _accessResolver.ResolveAsync(salesUserId);
+            if (!scope.CanSeeAll && conversation.AssignedUserId != scope.SalesUserId)
+            {
+                return StatusCode(StatusCodes.Status403Forbidden,
+                    new { message = "You do not have access to this conversation." });
             }
 
             var messages = await _db.ChatMessages

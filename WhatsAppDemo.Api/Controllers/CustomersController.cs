@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using WhatsAppDemo.Api.Data;
 using WhatsAppDemo.Api.Dtos;
 using WhatsAppDemo.Api.Models;
+using WhatsAppDemo.Api.Services;
 
 namespace WhatsAppDemo.Api.Controllers
 {
@@ -11,17 +12,33 @@ namespace WhatsAppDemo.Api.Controllers
     public class CustomersController : ControllerBase
     {
         private readonly AppDbContext _db;
+        private readonly IUserAccessResolver _accessResolver;
 
-        public CustomersController(AppDbContext db)
+        public CustomersController(AppDbContext db, IUserAccessResolver accessResolver)
         {
             _db = db;
+            _accessResolver = accessResolver;
         }
 
         [HttpGet]
-        public async Task<ActionResult<IEnumerable<CustomerDto>>> GetAll()
+        public async Task<ActionResult<IEnumerable<CustomerDto>>> GetAll([FromQuery] Guid? salesUserId = null)
         {
-            var customers = await _db.Customers
+            var scope = await _accessResolver.ResolveAsync(salesUserId);
+
+            var query = _db.Customers
                 .Include(c => c.AssignedUser)
+                .AsQueryable();
+
+            // Salesperson users only see customers they own (directly assigned or via
+            // one of their conversations); Admin (and legacy unscoped) see all.
+            if (!scope.CanSeeAll)
+            {
+                query = query.Where(c =>
+                    c.AssignedUserId == scope.SalesUserId ||
+                    c.Conversations.Any(conv => conv.AssignedUserId == scope.SalesUserId));
+            }
+
+            var customers = await query
                 .OrderBy(c => c.Name)
                 .ToListAsync();
 
@@ -29,15 +46,25 @@ namespace WhatsAppDemo.Api.Controllers
         }
 
         [HttpGet("{id:guid}")]
-        public async Task<ActionResult<CustomerDto>> GetById(Guid id)
+        public async Task<ActionResult<CustomerDto>> GetById(Guid id, [FromQuery] Guid? salesUserId = null)
         {
             var customer = await _db.Customers
                 .Include(c => c.AssignedUser)
+                .Include(c => c.Conversations)
                 .FirstOrDefaultAsync(c => c.Id == id);
 
             if (customer is null)
             {
                 return NotFound(new { message = $"Customer '{id}' was not found." });
+            }
+
+            var scope = await _accessResolver.ResolveAsync(salesUserId);
+            if (!scope.CanSeeAll &&
+                customer.AssignedUserId != scope.SalesUserId &&
+                !customer.Conversations.Any(conv => conv.AssignedUserId == scope.SalesUserId))
+            {
+                return StatusCode(StatusCodes.Status403Forbidden,
+                    new { message = "You do not have access to this customer." });
             }
 
             return Ok(MapToDto(customer));

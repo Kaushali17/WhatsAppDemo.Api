@@ -54,6 +54,7 @@ namespace WhatsAppDemo.Api.Controllers
             Id = u.Id,
             Name = u.Name,
             Email = u.Email,
+            Role = u.Role,
             WhatsAppBusinessNumbers = u.WhatsAppBusinessNumbers
                 .Select(n => new SalesUserWhatsAppNumberDto
                 {

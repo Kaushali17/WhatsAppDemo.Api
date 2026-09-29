@@ -11,6 +11,11 @@ namespace WhatsAppDemo.Api.Dtos
         public string Email { get; set; } = string.Empty;
 
         /// <summary>
+        /// CRM role: "Admin" or "Salesperson". Admin users can see all CRM data.
+        /// </summary>
+        public string Role { get; set; } = "Salesperson";
+
+        /// <summary>
         /// The sales person's WhatsApp business numbers (safe fields only; never
         /// includes any access token).
         /// </summary>

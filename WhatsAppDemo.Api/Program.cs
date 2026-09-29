@@ -34,6 +34,8 @@ namespace WhatsAppDemo.Api
 
             builder.Services.AddScoped<IMediaStorageService, LocalMediaStorageService>();
 
+            builder.Services.AddScoped<IUserAccessResolver, UserAccessResolver>();
+
             builder.Services.AddCors(options =>
             {
                 options.AddPolicy("Frontend", policy =>
