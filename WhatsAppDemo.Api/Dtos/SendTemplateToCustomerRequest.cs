@@ -44,6 +44,13 @@ namespace WhatsAppDemo.Api.Dtos
         /// </summary>
         public Guid? WhatsAppBusinessNumberId { get; set; }
 
+        /// <summary>
+        /// Optional alternative to <see cref="WhatsAppBusinessNumberId"/>. When the
+        /// caller identifies the sender by salesperson instead of by business-number id,
+        /// the backend resolves that salesperson's active WhatsApp Business number.
+        /// </summary>
+        public Guid? SalesUserId { get; set; }
+
         [Required]
         public string TemplateName { get; set; } = string.Empty;
 

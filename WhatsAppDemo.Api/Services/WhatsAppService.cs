@@ -723,28 +723,64 @@ namespace WhatsAppDemo.Api.Services
         {
             // 1. The selected WhatsApp Business number is the source of truth for the
             //    sender. It is required; outbound sending never falls back to the global
-            //    (test) PhoneNumberId.
-            if (request.WhatsAppBusinessNumberId is not Guid selectedBusinessNumberId ||
-                selectedBusinessNumberId == Guid.Empty)
+            //    (test) PhoneNumberId. The caller may identify it directly by
+            //    WhatsAppBusinessNumberId, or indirectly by SalesUserId (the backend then
+            //    resolves that salesperson's active business number).
+            WhatsAppBusinessNumber? businessNumber = null;
+
+            if (request.WhatsAppBusinessNumberId is Guid selectedBusinessNumberId &&
+                selectedBusinessNumberId != Guid.Empty)
+            {
+                businessNumber = await _db.WhatsAppBusinessNumbers
+                    .FirstOrDefaultAsync(n => n.Id == selectedBusinessNumberId);
+
+                if (businessNumber is null)
+                {
+                    return new SendTemplateMessageResponse
+                    {
+                        Success = false,
+                        Error = "The selected WhatsApp Business number was not found.",
+                        Details = $"No WhatsApp Business number exists with id '{selectedBusinessNumberId}'."
+                    };
+                }
+            }
+            else if (request.SalesUserId is Guid selectedSalesUserId &&
+                     selectedSalesUserId != Guid.Empty)
+            {
+                var salesUserNumbers = await _db.WhatsAppBusinessNumbers
+                    .Where(n => n.SalesUserId == selectedSalesUserId && n.IsActive)
+                    .OrderByDescending(n => n.CreatedAt)
+                    .ToListAsync();
+
+                if (salesUserNumbers.Count == 0)
+                {
+                    return new SendTemplateMessageResponse
+                    {
+                        Success = false,
+                        Error = "The selected WhatsApp Business number was not found.",
+                        Details = $"The selected salesperson '{selectedSalesUserId}' has no active WhatsApp Business number."
+                    };
+                }
+
+                if (salesUserNumbers.Count > 1)
+                {
+                    return new SendTemplateMessageResponse
+                    {
+                        Success = false,
+                        Error = "Multiple WhatsApp Business numbers found for the selected salesperson.",
+                        Details = "Specify WhatsAppBusinessNumberId because the salesperson owns more than one active business number."
+                    };
+                }
+
+                businessNumber = salesUserNumbers[0];
+            }
+            else
             {
                 return new SendTemplateMessageResponse
                 {
                     Success = false,
                     Error = "WhatsAppBusinessNumberId is required.",
-                    Details = "A WhatsApp Business number must be selected to send an outbound message."
-                };
-            }
-
-            var businessNumber = await _db.WhatsAppBusinessNumbers
-                .FirstOrDefaultAsync(n => n.Id == selectedBusinessNumberId);
-
-            if (businessNumber is null)
-            {
-                return new SendTemplateMessageResponse
-                {
-                    Success = false,
-                    Error = "The selected WhatsApp Business number was not found.",
-                    Details = $"No WhatsApp Business number exists with id '{selectedBusinessNumberId}'."
+                    Details = "A WhatsApp Business number (or SalesUserId) must be selected to send an outbound message."
                 };
             }
 
