@@ -9,8 +9,24 @@ namespace WhatsAppDemo.Api.Dtos
     /// </summary>
     public class SendTemplateToCustomerRequest
     {
-        [Required]
-        public Guid CustomerId { get; set; }
+        /// <summary>
+        /// Optional. When supplied, the existing CRM customer is used. When omitted,
+        /// the customer is resolved (or created) from <see cref="RecipientPhoneNumber"/>.
+        /// </summary>
+        public Guid? CustomerId { get; set; }
+
+        /// <summary>
+        /// Optional. Used when <see cref="CustomerId"/> is not supplied to look up or
+        /// create the CRM customer by their WhatsApp phone number. This allows sending
+        /// to a brand-new customer that has not been registered manually.
+        /// </summary>
+        public string? RecipientPhoneNumber { get; set; }
+
+        /// <summary>
+        /// Optional. Display name used when a new customer is created from
+        /// <see cref="RecipientPhoneNumber"/>.
+        /// </summary>
+        public string? CustomerName { get; set; }
 
         /// <summary>
         /// Optional. When supplied, the template is sent through this existing
@@ -20,12 +36,12 @@ namespace WhatsAppDemo.Api.Dtos
         public Guid? ConversationId { get; set; }
 
         /// <summary>
-        /// Optional. Explicitly selects the WhatsApp Business number (sender) to send
-        /// from. Takes precedence over <see cref="ConversationId"/> for routing. When
-        /// null, the sender is derived from the conversation, falling back to the
-        /// globally configured number.
+        /// Required. Selects the real WhatsApp Business number (sender) to send from.
+        /// This is the source of truth for the Meta PhoneNumberId; outbound sending
+        /// never falls back to a global/test phone number.
         /// </summary>
-        public Guid? WhatsAppBusinessNumberId { get; set; }
+        [Required]
+        public Guid WhatsAppBusinessNumberId { get; set; }
 
         [Required]
         public string TemplateName { get; set; } = string.Empty;

@@ -721,21 +721,132 @@ namespace WhatsAppDemo.Api.Services
         public async Task<SendTemplateMessageResponse> SendTemplateToCustomerAsync(
             SendTemplateToCustomerRequest request)
         {
-            // 1. Validate the customer exists.
-            var customer = await _db.Customers
-                .FirstOrDefaultAsync(c => c.Id == request.CustomerId);
-
-            if (customer is null)
+            // 1. The selected WhatsApp Business number is the source of truth for the
+            //    sender. It is required; outbound sending never falls back to the global
+            //    (test) PhoneNumberId.
+            if (request.WhatsAppBusinessNumberId == Guid.Empty)
             {
                 return new SendTemplateMessageResponse
                 {
                     Success = false,
-                    Error = "Customer not found.",
-                    Details = $"No customer exists with id '{request.CustomerId}'."
+                    Error = "WhatsAppBusinessNumberId is required.",
+                    Details = "A WhatsApp Business number must be selected to send an outbound message."
                 };
             }
 
-            // 2. Validate the customer has a WhatsApp number.
+            var businessNumber = await _db.WhatsAppBusinessNumbers
+                .FirstOrDefaultAsync(n => n.Id == request.WhatsAppBusinessNumberId);
+
+            if (businessNumber is null)
+            {
+                return new SendTemplateMessageResponse
+                {
+                    Success = false,
+                    Error = "The selected WhatsApp Business number was not found.",
+                    Details = $"No WhatsApp Business number exists with id '{request.WhatsAppBusinessNumberId}'."
+                };
+            }
+
+            if (!businessNumber.IsActive)
+            {
+                return new SendTemplateMessageResponse
+                {
+                    Success = false,
+                    Error = "WhatsApp business number is inactive.",
+                    Details = $"The selected WhatsApp business number '{businessNumber.DisplayPhoneNumber}' is not active."
+                };
+            }
+
+            if (string.IsNullOrWhiteSpace(businessNumber.PhoneNumberId))
+            {
+                return new SendTemplateMessageResponse
+                {
+                    Success = false,
+                    Error = "The selected WhatsApp Business number is not configured with a Meta PhoneNumberId.",
+                    Details = "The selected WhatsApp business number has no Meta phone_number_id."
+                };
+            }
+
+            // 2. Resolve the sender access token: per-number token when present,
+            //    otherwise the globally configured token. Never logged/exposed.
+            var senderAccessToken = string.IsNullOrWhiteSpace(businessNumber.AccessToken)
+                ? _settings.AccessToken
+                : businessNumber.AccessToken;
+
+            if (string.IsNullOrWhiteSpace(senderAccessToken))
+            {
+                return new SendTemplateMessageResponse
+                {
+                    Success = false,
+                    Error = "WhatsApp integration is not configured for the selected business number.",
+                    Details = "No access token is available for the selected WhatsApp business number."
+                };
+            }
+
+            var senderPhoneNumberId = businessNumber.PhoneNumberId;
+
+            // 3. Resolve the customer. Case A: CustomerId supplied -> use it.
+            //    Case B: no CustomerId but RecipientPhoneNumber supplied -> find or
+            //    create the CRM customer by phone number.
+            Customer? customer = null;
+            if (request.CustomerId is Guid customerId && customerId != Guid.Empty)
+            {
+                customer = await _db.Customers
+                    .FirstOrDefaultAsync(c => c.Id == customerId);
+
+                if (customer is null)
+                {
+                    return new SendTemplateMessageResponse
+                    {
+                        Success = false,
+                        Error = "Customer not found.",
+                        Details = $"No customer exists with id '{customerId}'."
+                    };
+                }
+            }
+            else if (!string.IsNullOrWhiteSpace(request.RecipientPhoneNumber))
+            {
+                var lookupPhone = NormalizePhone(request.RecipientPhoneNumber);
+
+                customer = await _db.Customers
+                    .FirstOrDefaultAsync(c => c.WhatsAppNumber == lookupPhone);
+
+                if (customer is null)
+                {
+                    customer = new Customer
+                    {
+                        Id = Guid.NewGuid(),
+                        Name = string.IsNullOrWhiteSpace(request.CustomerName)
+                            ? $"WhatsApp {lookupPhone}"
+                            : request.CustomerName!,
+                        WhatsAppNumber = lookupPhone,
+                        // Associate the new customer with the salesperson who owns the
+                        // selected business number.
+                        AssignedUserId = businessNumber.SalesUserId,
+                        CreatedAt = DateTime.UtcNow
+                    };
+
+                    _db.Customers.Add(customer);
+                    _logger.LogInformation(
+                        "Created new customer for outbound WhatsApp number {Phone}.",
+                        MaskPhone(lookupPhone));
+                }
+                else if (customer.AssignedUserId is null)
+                {
+                    customer.AssignedUserId = businessNumber.SalesUserId;
+                }
+            }
+            else
+            {
+                return new SendTemplateMessageResponse
+                {
+                    Success = false,
+                    Error = "A customer or recipient phone number is required.",
+                    Details = "Supply either CustomerId or RecipientPhoneNumber."
+                };
+            }
+
+            // 4. Validate the customer has a WhatsApp number.
             if (string.IsNullOrWhiteSpace(customer.WhatsAppNumber))
             {
                 return new SendTemplateMessageResponse
@@ -746,52 +857,11 @@ namespace WhatsAppDemo.Api.Services
                 };
             }
 
-            // 3/4. Normalize the number (do not blindly prepend a country code).
             var phone = NormalizePhone(customer.WhatsAppNumber);
 
-            // 5. Resolve the WhatsApp Business number (sender). Precedence:
-            //    (a) explicit WhatsAppBusinessNumberId, (b) the supplied conversation's
-            //    business number, (c) the customer's open conversation for that number.
-            WhatsAppBusinessNumber? businessNumber = null;
-            if (request.WhatsAppBusinessNumberId is Guid businessNumberId)
-            {
-                businessNumber = await _db.WhatsAppBusinessNumbers
-                    .FirstOrDefaultAsync(n => n.Id == businessNumberId);
-
-                if (businessNumber is null)
-                {
-                    return new SendTemplateMessageResponse
-                    {
-                        Success = false,
-                        Error = "WhatsApp business number not found.",
-                        Details = $"No WhatsApp business number exists with id '{businessNumberId}'."
-                    };
-                }
-
-                if (!businessNumber.IsActive)
-                {
-                    return new SendTemplateMessageResponse
-                    {
-                        Success = false,
-                        Error = "WhatsApp business number is inactive.",
-                        Details = $"The selected WhatsApp business number '{businessNumber.DisplayPhoneNumber}' is not active."
-                    };
-                }
-
-                if (string.IsNullOrWhiteSpace(businessNumber.PhoneNumberId))
-                {
-                    return new SendTemplateMessageResponse
-                    {
-                        Success = false,
-                        Error = "WhatsApp business number is not configured.",
-                        Details = "The selected WhatsApp business number has no Meta phone_number_id."
-                    };
-                }
-            }
-
-            // Prefer the caller-supplied conversation when valid and belonging to this
-            // customer; otherwise reuse/create the customer's open conversation scoped to
-            // the selected business number, preserving the salesperson relationship.
+            // 5. Resolve the conversation. Prefer the caller-supplied conversation when
+            //    valid and belonging to this customer; otherwise reuse/create the
+            //    customer's open conversation scoped to the selected business number.
             Conversation? conversation = null;
             if (request.ConversationId is Guid conversationId)
             {
@@ -800,22 +870,6 @@ namespace WhatsAppDemo.Api.Services
             }
 
             conversation ??= await GetOrCreateOpenConversationAsync(customer, businessNumber);
-
-            // Ensure we send from the number that owns this conversation when one was
-            // not explicitly selected, so a send never leaks onto another number.
-            businessNumber ??= conversation.WhatsAppBusinessNumberId is Guid convNumberId
-                ? await _db.WhatsAppBusinessNumbers.FirstOrDefaultAsync(n => n.Id == convNumberId)
-                : null;
-
-            // Resolve the sender phone_number_id + token. Per-number token when present,
-            // otherwise the globally configured credential (single-number POC default).
-            var senderPhoneNumberId = !string.IsNullOrWhiteSpace(businessNumber?.PhoneNumberId)
-                ? businessNumber!.PhoneNumberId
-                : _settings.PhoneNumberId;
-
-            var senderAccessToken = string.IsNullOrWhiteSpace(businessNumber?.AccessToken)
-                ? _settings.AccessToken
-                : businessNumber!.AccessToken;
 
             var textParameters = request.Parameters
                 .Where(p => string.Equals(p.Type, "text", StringComparison.OrdinalIgnoreCase))
@@ -876,7 +930,7 @@ namespace WhatsAppDemo.Api.Services
             {
                 _logger.LogWarning(
                     "Template '{Template}' send failed for customer {CustomerId}: {Error}",
-                    request.TemplateName, request.CustomerId, metaResult.Error);
+                    request.TemplateName, customer.Id, metaResult.Error);
 
                 return new SendTemplateMessageResponse
                 {
@@ -889,7 +943,7 @@ namespace WhatsAppDemo.Api.Services
 
             // 8. Persist the outgoing message against the conversation.
             // Ensure the conversation is tied to the sender business number.
-            if (businessNumber is not null && conversation.WhatsAppBusinessNumberId != businessNumber.Id)
+            if (conversation.WhatsAppBusinessNumberId != businessNumber.Id)
             {
                 conversation.WhatsAppBusinessNumberId = businessNumber.Id;
             }

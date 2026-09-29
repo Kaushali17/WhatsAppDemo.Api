@@ -598,7 +598,7 @@ namespace WhatsAppDemo.Api.Controllers
             if (!result.Success)
             {
                 if (string.Equals(result.Error, "Customer not found.", StringComparison.Ordinal) ||
-                    string.Equals(result.Error, "WhatsApp business number not found.", StringComparison.Ordinal))
+                    string.Equals(result.Error, "The selected WhatsApp Business number was not found.", StringComparison.Ordinal))
                 {
                     return NotFound(result);
                 }
