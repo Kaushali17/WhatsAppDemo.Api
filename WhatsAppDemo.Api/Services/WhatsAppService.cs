@@ -127,9 +127,10 @@ namespace WhatsAppDemo.Api.Services
             var phone = NormalizePhone(customer.WhatsAppNumber);
 
             // Determine which WhatsApp Business number this conversation uses so the
-            // Cloud API call goes out through the correct Meta PhoneNumberId. Falls
-            // back to the global configured number for backward compatibility.
-            var senderPhoneNumberId = await ResolveOutgoingPhoneNumberIdAsync(conversation);
+            // Cloud API call goes out through the correct Meta PhoneNumberId AND its
+            // matching access token. Falls back to the global configured number/token
+            // for backward compatibility.
+            var (senderPhoneNumberId, senderAccessToken) = await ResolveOutgoingSenderAsync(conversation);
 
             // Deliver the message for real through the Meta Cloud API so the
             // recipient actually receives it. The mock provider only simulates
@@ -149,7 +150,8 @@ namespace WhatsAppDemo.Api.Services
                     },
                     "text",
                     phone,
-                    senderPhoneNumberId);
+                    senderPhoneNumberId,
+                    senderAccessToken);
 
                 if (!metaResult.Success)
                 {
@@ -168,7 +170,7 @@ namespace WhatsAppDemo.Api.Services
                 // then send a message that references it. Falls back to the mock
                 // provider when the upload can't be performed.
                 var metaResult = await SendMediaToMetaAsync(
-                    phone, messageType, request.MediaUrl, request.Message, senderPhoneNumberId);
+                    phone, messageType, request.MediaUrl, request.Message, senderPhoneNumberId, senderAccessToken);
 
                 if (!metaResult.Success)
                 {
@@ -485,11 +487,14 @@ namespace WhatsAppDemo.Api.Services
             => phoneNumber.Trim();
 
         /// <summary>
-        /// Determines the Meta PhoneNumberId to send from, based on the conversation's
-        /// associated WhatsApp Business number. Falls back to the globally configured
-        /// PhoneNumberId to keep the single-number POC working.
+        /// Determines the Meta PhoneNumberId AND access token to send from, based on the
+        /// conversation's associated WhatsApp Business number. Both must come from the
+        /// same business number: sending with one number's PhoneNumberId but another's
+        /// (or the global) access token makes Meta reject the request. Falls back to the
+        /// globally configured PhoneNumberId/AccessToken to keep the single-number POC working.
         /// </summary>
-        private async Task<string> ResolveOutgoingPhoneNumberIdAsync(Conversation conversation)
+        private async Task<(string PhoneNumberId, string? AccessToken)> ResolveOutgoingSenderAsync(
+            Conversation conversation)
         {
             if (conversation.WhatsAppBusinessNumberId is Guid businessNumberId)
             {
@@ -498,11 +503,17 @@ namespace WhatsAppDemo.Api.Services
 
                 if (businessNumber is not null && !string.IsNullOrWhiteSpace(businessNumber.PhoneNumberId))
                 {
-                    return businessNumber.PhoneNumberId;
+                    // Use the per-number token when present so the token matches the
+                    // PhoneNumberId; otherwise fall back to the globally configured token.
+                    var accessToken = string.IsNullOrWhiteSpace(businessNumber.AccessToken)
+                        ? _settings.AccessToken
+                        : businessNumber.AccessToken;
+
+                    return (businessNumber.PhoneNumberId, accessToken);
                 }
             }
 
-            return _settings.PhoneNumberId;
+            return (_settings.PhoneNumberId, _settings.AccessToken);
         }
 
         private static string NormalizeMessageType(string? messageType)
@@ -1198,7 +1209,8 @@ namespace WhatsAppDemo.Api.Services
             string messageType,
             string? mediaUrl,
             string? caption,
-            string? senderPhoneNumberId = null)
+            string? senderPhoneNumberId = null,
+            string? senderAccessToken = null)
         {
             if (string.IsNullOrWhiteSpace(mediaUrl))
             {
@@ -1213,8 +1225,12 @@ namespace WhatsAppDemo.Api.Services
                 ? _settings.PhoneNumberId
                 : senderPhoneNumberId;
 
+            var accessToken = string.IsNullOrWhiteSpace(senderAccessToken)
+                ? _settings.AccessToken
+                : senderAccessToken;
+
             if (string.IsNullOrWhiteSpace(phoneNumberId) ||
-                string.IsNullOrWhiteSpace(_settings.AccessToken))
+                string.IsNullOrWhiteSpace(accessToken))
             {
                 return new WhatsAppSendMessageResponse
                 {
@@ -1239,7 +1255,7 @@ namespace WhatsAppDemo.Api.Services
             string? mediaId;
             await using (media.Content)
             {
-                mediaId = await UploadMediaToMetaAsync(media, phoneNumberId);
+                mediaId = await UploadMediaToMetaAsync(media, phoneNumberId, accessToken);
             }
 
             if (string.IsNullOrWhiteSpace(mediaId))
@@ -1271,17 +1287,21 @@ namespace WhatsAppDemo.Api.Services
                 [metaType] = mediaPayload
             };
 
-            return await SendToMetaAsync(requestBody, metaType, recipientPhoneNumber, phoneNumberId);
+            return await SendToMetaAsync(requestBody, metaType, recipientPhoneNumber, phoneNumberId, accessToken);
         }
 
         /// <summary>
         /// Uploads a file to the Meta /media endpoint and returns the media id.
         /// </summary>
-        private async Task<string?> UploadMediaToMetaAsync(StoredMediaFile media, string? senderPhoneNumberId = null)
+        private async Task<string?> UploadMediaToMetaAsync(StoredMediaFile media, string? senderPhoneNumberId = null, string? senderAccessToken = null)
         {
             var phoneNumberId = string.IsNullOrWhiteSpace(senderPhoneNumberId)
                 ? _settings.PhoneNumberId
                 : senderPhoneNumberId;
+
+            var accessToken = string.IsNullOrWhiteSpace(senderAccessToken)
+                ? _settings.AccessToken
+                : senderAccessToken;
 
             var url = $"{_settings.BaseUrl}/{_settings.ApiVersion}/{phoneNumberId}/media";
 
@@ -1295,7 +1315,7 @@ namespace WhatsAppDemo.Api.Services
 
             using var request = new HttpRequestMessage(HttpMethod.Post, url);
             request.Headers.Authorization =
-                new AuthenticationHeaderValue("Bearer", _settings.AccessToken);
+                new AuthenticationHeaderValue("Bearer", accessToken);
             request.Content = content;
 
             try
