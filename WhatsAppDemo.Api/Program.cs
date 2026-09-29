@@ -39,11 +39,11 @@ namespace WhatsAppDemo.Api
                 options.AddPolicy("Frontend", policy =>
                 {
                     policy.WithOrigins(
-                         "http://localhost:5173",
-            "https://wonderful-plant-07b10fe10.1.azurestaticapps.net"
-                    )
-                    .AllowAnyHeader()
-                    .AllowAnyMethod();
+                            "http://localhost:5173",
+                            "https://wonderful-plant-07b10fe10.1.azurestaticapps.net"
+                        )
+                        .AllowAnyHeader()
+                        .AllowAnyMethod();
                 });
             });
 
