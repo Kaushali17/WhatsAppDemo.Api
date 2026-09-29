@@ -77,11 +77,28 @@ namespace WhatsAppDemo.Api
                 }
             }
 
-            // Seed POC data at runtime (no migration required).
+            // Apply pending EF Core migrations and seed POC data at runtime.
+            // Wrapped in try/catch so a transient/misconfigured database does not
+            // crash application startup (which surfaces as HTTP 500.30 on Azure).
             using (var scope = app.Services.CreateScope())
             {
-                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                await DbSeeder.SeedAsync(db, builder.Configuration);
+                var seedLogger = scope.ServiceProvider
+                    .GetRequiredService<ILoggerFactory>()
+                    .CreateLogger("DbStartup");
+                try
+                {
+                    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    await db.Database.MigrateAsync();
+                    await DbSeeder.SeedAsync(db, builder.Configuration);
+                }
+                catch (Exception ex)
+                {
+                    seedLogger.LogError(ex,
+                        "Database migration/seeding failed at startup. The application " +
+                        "will continue to start, but data endpoints may return errors " +
+                        "until the database connection string, firewall, and schema are " +
+                        "correctly configured.");
+                }
             }
 
             // Configure the HTTP request pipeline.
