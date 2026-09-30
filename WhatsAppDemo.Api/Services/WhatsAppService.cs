@@ -352,12 +352,21 @@ namespace WhatsAppDemo.Api.Services
 
             // Incoming media arrives as a Meta media id. Download the bytes and store
             // them locally so the file can be opened/downloaded from the CRM.
+            // Use the receiving business number's own access token when it has one,
+            // falling back to the globally configured token. Without this, media sent
+            // to a per-number token would never download and the chat would show an
+            // empty bubble.
+            var effectiveMediaToken = !string.IsNullOrWhiteSpace(businessNumber?.AccessToken)
+                ? businessNumber!.AccessToken!
+                : _settings.AccessToken;
+
             var mediaUrl = request.MediaUrl;
             if (string.IsNullOrWhiteSpace(mediaUrl) &&
                 !string.IsNullOrWhiteSpace(request.MetaMediaId) &&
-                _settings.IsConfigured)
+                !string.IsNullOrWhiteSpace(effectiveMediaToken))
             {
-                var stored = await DownloadMetaMediaAsync(request.MetaMediaId!, request.FileName);
+                var stored = await DownloadMetaMediaAsync(
+                    request.MetaMediaId!, request.FileName, effectiveMediaToken);
                 if (stored is not null)
                 {
                     mediaUrl = stored.Url;
@@ -1431,10 +1440,14 @@ namespace WhatsAppDemo.Api.Services
         /// locally, returning the stored media so it can be opened/downloaded from
         /// the CRM. Returns null when the download can't be performed.
         /// </summary>
-        private async Task<StoredMedia?> DownloadMetaMediaAsync(string metaMediaId, string? preferredFileName)
+        private async Task<StoredMedia?> DownloadMetaMediaAsync(
+            string metaMediaId, string? preferredFileName, string? accessToken = null)
         {
-            if (string.IsNullOrWhiteSpace(_settings.PhoneNumberId) ||
-                string.IsNullOrWhiteSpace(_settings.AccessToken))
+            var effectiveToken = !string.IsNullOrWhiteSpace(accessToken)
+                ? accessToken!
+                : _settings.AccessToken;
+
+            if (string.IsNullOrWhiteSpace(effectiveToken))
             {
                 return null;
             }
@@ -1446,7 +1459,7 @@ namespace WhatsAppDemo.Api.Services
 
                 using var metaRequest = new HttpRequestMessage(HttpMethod.Get, metadataUrl);
                 metaRequest.Headers.Authorization =
-                    new AuthenticationHeaderValue("Bearer", _settings.AccessToken);
+                    new AuthenticationHeaderValue("Bearer", effectiveToken);
 
                 using var metaResponse = await _httpClient.SendAsync(metaRequest);
                 var metaContent = await metaResponse.Content.ReadAsStringAsync();
@@ -1479,7 +1492,7 @@ namespace WhatsAppDemo.Api.Services
                 // Step 2: download the actual bytes (also requires the bearer token).
                 using var fileRequest = new HttpRequestMessage(HttpMethod.Get, downloadUrl);
                 fileRequest.Headers.Authorization =
-                    new AuthenticationHeaderValue("Bearer", _settings.AccessToken);
+                    new AuthenticationHeaderValue("Bearer", effectiveToken);
 
                 using var fileResponse = await _httpClient.SendAsync(fileRequest);
 
