@@ -1504,8 +1504,14 @@ namespace WhatsAppDemo.Api.Services
                     return null;
                 }
 
-                var contentType = fileResponse.Content.Headers.ContentType?.ToString()
-                    ?? mimeType
+                // Prefer Meta's metadata mime_type (e.g. "image/jpeg"): the actual file
+                // download frequently reports a generic "application/octet-stream", which
+                // would leave images without a proper extension and unservable by the
+                // static file middleware (broken image icon in the CRM). Meta sometimes
+                // appends parameters (e.g. "image/jpeg; codecs=..."), so strip those.
+                var downloadHeaderType = fileResponse.Content.Headers.ContentType?.MediaType;
+
+                var contentType = FirstUsableContentType(mimeType, downloadHeaderType)
                     ?? "application/octet-stream";
 
                 var fileName = string.IsNullOrWhiteSpace(preferredFileName)
@@ -1522,16 +1528,59 @@ namespace WhatsAppDemo.Api.Services
             }
         }
 
+        /// <summary>
+        /// Returns the first content type that is usable (non-empty and not a generic
+        /// octet-stream), normalised to its base media type without parameters.
+        /// </summary>
+        private static string? FirstUsableContentType(params string?[] candidates)
+        {
+            foreach (var candidate in candidates)
+            {
+                if (string.IsNullOrWhiteSpace(candidate))
+                {
+                    continue;
+                }
+
+                // Strip any parameters, e.g. "image/jpeg; charset=binary".
+                var baseType = candidate.Split(';')[0].Trim();
+
+                if (baseType.Length == 0 ||
+                    baseType.Equals("application/octet-stream", StringComparison.OrdinalIgnoreCase) ||
+                    baseType.Equals("binary/octet-stream", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                return baseType;
+            }
+
+            return null;
+        }
+
         private static string BuildFileNameFromContentType(string mediaId, string contentType)
         {
-            var extension = contentType switch
+            var baseType = contentType.Split(';')[0].Trim();
+
+            var extension = baseType.ToLowerInvariant() switch
             {
                 "image/jpeg" => ".jpg",
+                "image/jpg" => ".jpg",
                 "image/png" => ".png",
                 "image/webp" => ".webp",
                 "image/gif" => ".gif",
+                "image/bmp" => ".bmp",
+                "image/tiff" => ".tiff",
                 "application/pdf" => ".pdf",
-                _ => string.Empty
+                "audio/mpeg" => ".mp3",
+                "audio/ogg" => ".ogg",
+                "audio/mp4" => ".m4a",
+                "audio/aac" => ".aac",
+                "audio/amr" => ".amr",
+                "video/mp4" => ".mp4",
+                "video/3gpp" => ".3gp",
+                // Fall back to a generic image extension so image messages remain
+                // servable/previewable even when the mime type is unrecognised.
+                _ => baseType.StartsWith("image/", StringComparison.OrdinalIgnoreCase) ? ".jpg" : string.Empty
             };
 
             return $"{mediaId}{extension}";
