@@ -212,16 +212,53 @@ namespace WhatsAppDemo.Api.Controllers
             LastMessageAt = c.LastMessageAt
         };
 
-        private static ChatMessageDto MapMessage(ChatMessages m) => new()
+        private ChatMessageDto MapMessage(ChatMessages m) => new()
         {
             Id = m.Id,
             ConversationId = m.ConversationId,
             Direction = m.Direction,
             MessageType = m.MessageType,
             MessageText = m.MessageText,
-            MediaUrl = m.MediaUrl,
+            MediaUrl = ToAbsoluteMediaUrl(m.MediaUrl),
             WhatsAppMessageId = m.WhatsAppMessageId,
             CreatedAt = m.CreatedAt
         };
+
+        /// <summary>
+        /// Converts a stored relative media URL (e.g. "/uploads/xyz.jpg") into an
+        /// absolute URL that the CRM front-end can load. The CRM typically runs on a
+        /// different origin than this API, so a relative URL would resolve against the
+        /// front-end and fail (broken image). Media is routed through the API's own
+        /// download endpoint (GET /api/whatsapp/media/{fileName}) rather than the
+        /// static /uploads path, because that endpoint reliably serves files across
+        /// hosting environments (including Azure App Service). Already-absolute URLs
+        /// are returned unchanged.
+        /// </summary>
+        private string? ToAbsoluteMediaUrl(string? mediaUrl)
+        {
+            if (string.IsNullOrWhiteSpace(mediaUrl) ||
+                Uri.TryCreate(mediaUrl, UriKind.Absolute, out _))
+            {
+                return mediaUrl;
+            }
+
+            var request = HttpContext?.Request;
+            if (request is null)
+            {
+                return mediaUrl;
+            }
+
+            // Extract the stored file name from the relative "/uploads/{fileName}" URL
+            // and serve it through the API download endpoint.
+            var fileName = mediaUrl.TrimStart('/');
+            const string uploadsPrefix = "uploads/";
+            if (fileName.StartsWith(uploadsPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                fileName = fileName[uploadsPrefix.Length..];
+            }
+
+            var baseUrl = $"{request.Scheme}://{request.Host}{request.PathBase}";
+            return $"{baseUrl}/api/whatsapp/media/{Uri.EscapeDataString(fileName)}";
+        }
     }
 }
