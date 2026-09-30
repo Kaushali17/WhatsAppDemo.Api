@@ -126,29 +126,46 @@ namespace WhatsAppDemo.Api.Services
             // so a ConversationId send is delivered to the correct person.
             var phone = NormalizePhone(customer.WhatsAppNumber);
 
-            // Determine which WhatsApp Business number this conversation uses so the
-            // Cloud API call goes out through the correct Meta PhoneNumberId AND its
-            // matching access token. Falls back to the global configured number/token
-            // for backward compatibility.
-            var (senderPhoneNumberId, senderAccessToken) = await ResolveOutgoingSenderAsync(conversation);
+            // Resolve and validate the WhatsApp Business number to send from. This uses
+            // the conversation's associated business number (set from the salesperson
+            // number selected in the CRM), or the customer's assigned salesperson's
+            // single active number. It NEVER silently falls back to the old global/test
+            // PhoneNumberId.
+            var (senderNumber, senderAccessToken, senderError) =
+                await ResolveSenderNumberAsync(conversation, customer);
 
-            // Whether we can deliver for real depends on the RESOLVED sender (the
-            // conversation's business number, or the global config as fallback) having
-            // both a PhoneNumberId and an access token - NOT on the global _settings
-            // alone. Gating on _settings.IsConfigured would wrongly fall back to the
-            // mock provider whenever the global config is empty even though the
-            // per-number credentials are present, silently "sending" without delivering.
-            var canDeliverViaMeta =
-                !string.IsNullOrWhiteSpace(senderPhoneNumberId) &&
-                !string.IsNullOrWhiteSpace(senderAccessToken);
+            if (senderNumber is null)
+            {
+                return new WhatsAppMessageResult
+                {
+                    Success = false,
+                    Message = senderError ?? "No WhatsApp Business number is configured for this conversation."
+                };
+            }
 
-            // Deliver the message for real through the Meta Cloud API so the
-            // recipient actually receives it. The mock provider only simulates
-            // delivery, so it is used purely as a fallback when Meta is not
-            // configured (keeps the POC working offline).
+            var senderPhoneNumberId = senderNumber.PhoneNumberId;
+
+            // Clear pre-send logging. Never logs the access token itself.
+            _logger.LogInformation(
+                "Outbound WhatsApp send -> SalespersonId: {SalespersonId} | CustomerId: {CustomerId} | " +
+                "BusinessNumberId: {BusinessNumberId} | SelectedPhoneNumberId: {PhoneNumberId} | " +
+                "SelectedWhatsAppNumber: {DisplayNumber} | Recipient: {Recipient} | " +
+                "MetaEndpointPhoneNumberId: {MetaPhoneNumberId} | AccessTokenSource: {TokenSource}",
+                senderNumber.SalesUserId,
+                customer.Id,
+                senderNumber.Id,
+                senderPhoneNumberId,
+                senderNumber.DisplayPhoneNumber,
+                MaskPhone(phone),
+                senderPhoneNumberId,
+                string.IsNullOrWhiteSpace(senderNumber.AccessToken) ? "GlobalConfig" : "BusinessNumberRecord");
+
+            // Deliver the message for real through the Meta Cloud API so the recipient
+            // actually receives it. The mock provider is used only when Meta delivery is
+            // genuinely unavailable AND no real business number is in play (offline POC).
             string? deliveredMessageId;
 
-            if (messageType == "Text" && canDeliverViaMeta)
+            if (messageType == "Text")
             {
                 var metaResult = await SendToMetaAsync(
                     new
@@ -174,11 +191,10 @@ namespace WhatsAppDemo.Api.Services
 
                 deliveredMessageId = metaResult.MessageId;
             }
-            else if (messageType != "Text" && canDeliverViaMeta)
+            else
             {
                 // Media (image/document): upload the file to Meta to obtain a media id,
-                // then send a message that references it. Falls back to the mock
-                // provider when the upload can't be performed.
+                // then send a message that references it.
                 var metaResult = await SendMediaToMetaAsync(
                     phone, messageType, request.MediaUrl, request.Message, senderPhoneNumberId, senderAccessToken);
 
@@ -192,23 +208,6 @@ namespace WhatsAppDemo.Api.Services
                 }
 
                 deliveredMessageId = metaResult.MessageId;
-            }
-            else
-            {
-                // Non-text messages (or unconfigured Meta) fall back to the mock provider.
-                var providerResult = await _provider.SendMessageAsync(
-                    phone, request.Message, messageType, request.MediaUrl);
-
-                if (!providerResult.Success)
-                {
-                    return new WhatsAppMessageResult
-                    {
-                        Success = false,
-                        Message = providerResult.Error ?? "Provider failed to send the message."
-                    };
-                }
-
-                deliveredMessageId = providerResult.ProviderMessageId;
             }
 
             var chatMessage = new ChatMessages
@@ -497,33 +496,78 @@ namespace WhatsAppDemo.Api.Services
             => phoneNumber.Trim();
 
         /// <summary>
-        /// Determines the Meta PhoneNumberId AND access token to send from, based on the
-        /// conversation's associated WhatsApp Business number. Both must come from the
-        /// same business number: sending with one number's PhoneNumberId but another's
-        /// (or the global) access token makes Meta reject the request. Falls back to the
-        /// globally configured PhoneNumberId/AccessToken to keep the single-number POC working.
+        /// Resolves and validates the WhatsApp Business number to send from for a CRM
+        /// conversation. Resolution order:
+        ///   1. The conversation's own WhatsAppBusinessNumberId (set from the selected
+        ///      salesperson number when the conversation was created).
+        ///   2. When the conversation has none, the customer's assigned salesperson's
+        ///      single active business number (backfilled onto the conversation).
+        /// Never silently falls back to the old global/test PhoneNumberId. Enforces
+        /// IsActive, non-empty PhoneNumberId and a usable access token.
         /// </summary>
-        private async Task<(string PhoneNumberId, string? AccessToken)> ResolveOutgoingSenderAsync(
-            Conversation conversation)
+        private async Task<(WhatsAppBusinessNumber? Number, string? EffectiveAccessToken, string? Error)>
+            ResolveSenderNumberAsync(Conversation conversation, Customer customer)
         {
+            WhatsAppBusinessNumber? number = null;
+
             if (conversation.WhatsAppBusinessNumberId is Guid businessNumberId)
             {
-                var businessNumber = await _db.WhatsAppBusinessNumbers
+                number = await _db.WhatsAppBusinessNumbers
                     .FirstOrDefaultAsync(n => n.Id == businessNumberId);
+            }
 
-                if (businessNumber is not null && !string.IsNullOrWhiteSpace(businessNumber.PhoneNumberId))
+            // Fall back to the customer's assigned salesperson's active number (only when
+            // that salesperson owns exactly one, to avoid guessing).
+            if (number is null && customer.AssignedUserId is Guid assignedUserId)
+            {
+                var salesUserNumbers = await _db.WhatsAppBusinessNumbers
+                    .Where(n => n.SalesUserId == assignedUserId && n.IsActive)
+                    .ToListAsync();
+
+                if (salesUserNumbers.Count == 1)
                 {
-                    // Use the per-number token when present so the token matches the
-                    // PhoneNumberId; otherwise fall back to the globally configured token.
-                    var accessToken = string.IsNullOrWhiteSpace(businessNumber.AccessToken)
-                        ? _settings.AccessToken
-                        : businessNumber.AccessToken;
+                    number = salesUserNumbers[0];
 
-                    return (businessNumber.PhoneNumberId, accessToken);
+                    // Backfill so future sends on this conversation are unambiguous.
+                    if (conversation.WhatsAppBusinessNumberId is null)
+                    {
+                        conversation.WhatsAppBusinessNumberId = number.Id;
+                    }
                 }
             }
 
-            return (_settings.PhoneNumberId, _settings.AccessToken);
+            if (number is null)
+            {
+                return (null, null,
+                    "No WhatsApp Business number is associated with this conversation or its " +
+                    "assigned salesperson. Select a salesperson WhatsApp number before sending.");
+            }
+
+            if (!number.IsActive)
+            {
+                return (null, null,
+                    $"The selected WhatsApp Business number '{number.DisplayPhoneNumber}' is not active.");
+            }
+
+            if (string.IsNullOrWhiteSpace(number.PhoneNumberId))
+            {
+                return (null, null,
+                    $"The selected WhatsApp Business number '{number.DisplayPhoneNumber}' has no Meta PhoneNumberId configured.");
+            }
+
+            // Prefer the per-number access token; only when it is not set may the global
+            // token be used. The global PhoneNumberId is never substituted here.
+            var effectiveToken = string.IsNullOrWhiteSpace(number.AccessToken)
+                ? _settings.AccessToken
+                : number.AccessToken;
+
+            if (string.IsNullOrWhiteSpace(effectiveToken))
+            {
+                return (null, null,
+                    $"No access token is configured for the WhatsApp Business number '{number.DisplayPhoneNumber}'.");
+            }
+
+            return (number, effectiveToken, null);
         }
 
         private static string NormalizeMessageType(string? messageType)
